@@ -48,7 +48,7 @@ domain + IIS'e taşımak için sırayla çalıştırılır. Detaylı plan: proje
    - `https://api.mobilservisiniz.com/swagger`
    - `https://panel.mobilservisiniz.com`
    - `https://yonetim.mobilservisiniz.com`
-   - `http://37.148.211.243:5280/swagger` (eski, hâlâ çalışmalı)
+   - `http://31.57.33.85:5280/swagger` (eski, hâlâ çalışmalı)
 
 8. Mobil uygulamayı yeni sürümle (yeni API adresine işaret eden) güncelleyin — bkz. proje
    kökünde `mobile/src/lib/api-config.ts` (zaten güncellendi) ve Platform > Uygulama Sürümü

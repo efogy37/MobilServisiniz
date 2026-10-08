@@ -1,5 +1,5 @@
 # OtoServis — Publish ve sunucuya deploy
-# Sunucu: 37.148.211.243
+# Sunucu: 31.57.33.85
 # Domain (IIS uzerinden): api./panel./yonetim.mobilservisiniz.com
 # Eski portlar (gecis suresince, IIS ayni binding'leri de sunuyor): API 5280 | Admin 5281 | Platform 5282
 
@@ -11,7 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $PublishRoot = Join-Path (Split-Path -Parent $Root) "publish"
-$Server = "37.148.211.243"
+$Server = "31.57.33.85"
 $ServerUser = "administrator"
 # Gercek sunucu parolasi kaynak kodda tutulmaz: calistirmadan once
 #   $env:OTOSERVIS_SERVER_PASS = "..."

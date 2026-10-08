@@ -1,17 +1,17 @@
 # MobilServisiniz — Sunucu Kurulum Rehberi
 
-**Sunucu:** `37.148.211.243`
+**Sunucu:** `31.57.33.85`
 **Domain (IIS üzerinden, önerilen):**
 - API: `https://api.mobilservisiniz.com`
 - Admin (servis paneli): `https://panel.mobilservisiniz.com`
 - Platform (tüm servisler / üst yönetim): `https://yonetim.mobilservisiniz.com`
 
 **Eski IP:port (geçiş süresince IIS aynı binding'leri de sunuyor, geriye uyumluluk için):**
-- API: `http://37.148.211.243:5280`
-- Admin: `http://37.148.211.243:5281`
-- Platform: `http://37.148.211.243:5282`
+- API: `http://31.57.33.85:5280`
+- Admin: `http://31.57.33.85:5281`
+- Platform: `http://31.57.33.85:5282`
 
-**SQL Server:** `37.148.211.243` / `OtoServis` / `otoservis_api`
+**SQL Server:** `31.57.33.85` / `OtoServis` / `otoservis_api`
 
 ---
 
@@ -101,9 +101,9 @@ yeniden başlatma — IIS varsa App Pool, yoksa eski süreç yöntemiyle).
 
 | Test | Yeni (domain) | Eski (IP:port, geçiş süresince) |
 |------|------|------|
-| API Swagger | https://api.mobilservisiniz.com/swagger | http://37.148.211.243:5280/swagger |
-| Admin giriş | https://panel.mobilservisiniz.com | http://37.148.211.243:5281 |
-| Platform giriş | https://yonetim.mobilservisiniz.com | http://37.148.211.243:5282 |
+| API Swagger | https://api.mobilservisiniz.com/swagger | http://31.57.33.85:5280/swagger |
+| Admin giriş | https://panel.mobilservisiniz.com | http://31.57.33.85:5281 |
+| Platform giriş | https://yonetim.mobilservisiniz.com | http://31.57.33.85:5282 |
 
 **Admin demo:** `OTO-IST` + `05551112233` + `1234`
 **Platform demo:** `05000000001` + `1234` (önce `15_platform_admin.sql`)

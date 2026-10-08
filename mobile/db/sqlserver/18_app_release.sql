@@ -45,7 +45,7 @@ BEGIN
     END;
     DECLARE @insertSql nvarchar(max) = N'
         INSERT INTO dbo.app_release (id, latest_version, latest_version_code, min_version_code, ' + QUOTENAME(@urlCol) + N', release_notes)
-        VALUES (1, N''1.0.19'', 20, 20, N''http://37.148.211.243:5280/releases/MobilServisiniz.apk'', N''Mevcut surum'');';
+        VALUES (1, N''1.0.19'', 20, 20, N''http://31.57.33.85:5280/releases/MobilServisiniz.apk'', N''Mevcut surum'');';
     EXEC sp_executesql @insertSql;
     PRINT N'app_release seed (1.0.19 / code 20) eklendi.';
 END

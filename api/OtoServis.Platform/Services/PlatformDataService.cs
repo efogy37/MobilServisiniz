@@ -332,7 +332,20 @@ public class PlatformDataService(DbFactory db)
         if (n == 0) throw new InvalidOperationException("Kullanıcı bulunamadı.");
     }
 
-    public async Task<IReadOnlyList<ActivityRow>> GetStatusHistoryAsync(Guid shopId, int days = 30, int take = 80)
+    public async Task<ShopUsageStats> GetShopUsageStatsAsync(Guid shopId)
+    {
+        await using var conn = await db.OpenAsync();
+        return await conn.QuerySingleAsync<ShopUsageStats>(
+            @"SELECT
+                (SELECT COUNT(1) FROM dbo.customers WHERE shop_id=@shopId AND is_active=1) AS Customers,
+                (SELECT COUNT(1) FROM dbo.vehicles WHERE shop_id=@shopId AND is_active=1) AS Vehicles,
+                (SELECT COUNT(1) FROM dbo.work_orders WHERE shop_id=@shopId) AS WorkOrders,
+                (SELECT COUNT(1) FROM dbo.payments WHERE shop_id=@shopId) AS PaymentsCount,
+                (SELECT ISNULL(SUM(amount),0) FROM dbo.payments WHERE shop_id=@shopId) AS PaymentsTotal",
+            new { shopId });
+    }
+
+    public async Task<IReadOnlyList<ActivityRow>> GetStatusHistoryAsync(Guid shopId, int take = 80)
     {
         await using var conn = await db.OpenAsync();
         var rows = await conn.QueryAsync<ActivityRow>(
@@ -347,13 +360,12 @@ public class PlatformDataService(DbFactory db)
               LEFT JOIN dbo.users cu ON cu.id = h.changed_by
               LEFT JOIN dbo.users au ON au.id = wo.assigned_user_id
               WHERE h.shop_id = @shopId
-                AND h.changed_at >= DATEADD(day, -@days, SYSUTCDATETIME())
               ORDER BY h.changed_at DESC",
-            new { shopId, days, take });
+            new { shopId, take });
         return rows.ToList();
     }
 
-    public async Task<IReadOnlyList<PaymentActivityRow>> GetPaymentsAsync(Guid shopId, int days = 30, int take = 50)
+    public async Task<IReadOnlyList<PaymentActivityRow>> GetPaymentsAsync(Guid shopId, int take = 50)
     {
         await using var conn = await db.OpenAsync();
         var rows = await conn.QueryAsync<PaymentActivityRow>(
@@ -365,9 +377,8 @@ public class PlatformDataService(DbFactory db)
               INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id
               LEFT JOIN dbo.users u ON u.id = p.received_by
               WHERE p.shop_id = @shopId
-                AND p.paid_at >= DATEADD(day, -@days, SYSUTCDATETIME())
               ORDER BY p.paid_at DESC",
-            new { shopId, days, take });
+            new { shopId, take });
         return rows.ToList();
     }
 

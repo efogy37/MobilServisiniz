@@ -1,4 +1,4 @@
-# Sunucuda calistirin (RDP ile 37.148.211.243)
+# Sunucuda calistirin (RDP ile 31.57.33.85)
 # Once OtoServis-Api.zip ve OtoServis-Admin.zip dosyalarini C:\OtoServis\ altina kopyalayin
 
 $ErrorActionPreference = "Stop"
@@ -70,8 +70,8 @@ Start-Process -FilePath "dotnet" -ArgumentList "$adminPath\OtoServis.Admin.dll" 
 
 Write-Host ""
 Write-Host "Kurulum tamamlandi!" -ForegroundColor Green
-Write-Host "  API:   http://37.148.211.243:5280/swagger"
-Write-Host "  Admin: http://37.148.211.243:5281"
+Write-Host "  API:   http://31.57.33.85:5280/swagger"
+Write-Host "  Admin: http://31.57.33.85:5281"
 Write-Host ""
 Write-Host "Test:"
 Write-Host '  Invoke-RestMethod "http://localhost:5280/api/auth/lookup-tenant?code=OTO-IST"'

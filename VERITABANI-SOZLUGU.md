@@ -1,6 +1,6 @@
 # MobilServisiniz — Veritabanı Sözlüğü
 
-> Bu doküman canlı sunucudaki (`37.148.211.243` / `OtoServis`) veritabanı şemasından
+> Bu doküman canlı sunucudaki (`31.57.33.85` / `OtoServis`) veritabanı şemasından
 > otomatik olarak çıkarılmıştır (12.08.2026). Her tablonun ne işe yaradığı ve
 > her kolonun anlamı Türkçe olarak açıklanmıştır.
 >

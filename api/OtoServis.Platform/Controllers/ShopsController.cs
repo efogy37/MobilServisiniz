@@ -203,6 +203,7 @@ public class ShopsController(PlatformDataService data) : Controller
             Shop = shop,
             Edit = edit,
             Users = (await data.GetShopUsersAsync(id)).ToList(),
+            Stats = await data.GetShopUsageStatsAsync(id),
             StatusHistory = (await data.GetStatusHistoryAsync(id)).ToList(),
             Payments = (await data.GetPaymentsAsync(id)).ToList(),
             Plans = (await data.GetPlansAsync()).ToList(),

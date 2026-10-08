@@ -40,6 +40,7 @@ public class ShopDetailViewModel
     public ShopEditForm Edit { get; set; } = new();
     public List<ShopUserRow> Users { get; set; } = [];
     public AddUserForm AddUser { get; set; } = new();
+    public ShopUsageStats Stats { get; set; } = new();
     public List<ActivityRow> StatusHistory { get; set; } = [];
     public List<PaymentActivityRow> Payments { get; set; } = [];
     public List<PlanOption> Plans { get; set; } = [];
@@ -171,6 +172,15 @@ public class ShopUserRow
     public bool IsOwner { get; set; }
     public bool IsActive { get; set; }
     public DateTime JoinedAt { get; set; }
+}
+
+public class ShopUsageStats
+{
+    public int Customers { get; set; }
+    public int Vehicles { get; set; }
+    public int WorkOrders { get; set; }
+    public int PaymentsCount { get; set; }
+    public decimal PaymentsTotal { get; set; }
 }
 
 public class ActivityRow

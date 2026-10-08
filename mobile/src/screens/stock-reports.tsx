@@ -234,28 +234,28 @@ export function StockReports({ onBack }: { onBack: () => void }) {
     {
       key: 'usage',
       title: 'Stok Kullanım Raporu',
-      subtitle: 'Seçilen tarih aralığında en çok kullanılan ürünler',
+      subtitle: 'Dönemde iş emrine eklenen parça miktarı ve satış tutarı',
       icon: Package,
       color: '#2f4a86',
     },
     {
       key: 'purchaseSale',
       title: 'Stok Alış–Satış Raporu',
-      subtitle: 'Ürün bazlı alış maliyeti, satış tutarı ve kâr',
+      subtitle: 'Parça maliyeti, satış tutarı ve kâr (işçilik hariç)',
       icon: ShoppingCart,
       color: '#e07d33',
     },
     {
       key: 'ledger',
       title: 'Cari Hareket Raporu',
-      subtitle: 'Müşteri ve tedarikçi borç/alacak hareketleri',
+      subtitle: 'Müşteri iş emri/tahsilat ve tedarikçi alış/ödeme',
       icon: Wallet,
       color: '#0f766e',
     },
     {
       key: 'sales',
       title: 'Satış Raporu',
-      subtitle: 'Ciro, tahsilat, ödeme yöntemi ve en çok satan hizmetler',
+      subtitle: 'İş emri cirosu, dönem tahsilatı ve ödeme yöntemleri',
       icon: LineChart,
       color: '#7c3aed',
     },
@@ -353,8 +353,9 @@ function StockUsageScreen({ onBack }: { onBack: () => void }) {
               <Text className="mt-1 text-lg font-extrabold text-foreground">{totalQty} adet</Text>
             </View>
             <View className="flex-1 rounded-2xl border border-border bg-card p-4" style={cardShadow}>
-              <Text className="text-xs font-semibold text-muted-foreground">Toplam Tutar</Text>
+              <Text className="text-xs font-semibold text-muted-foreground">Parça Satışı</Text>
               <Text className="mt-1 text-lg font-extrabold text-foreground">{formatCurrency(totalRevenue)}</Text>
+              <Text className="mt-0.5 text-[10px] text-muted-foreground">İşçilik hariç</Text>
             </View>
           </View>
 
@@ -500,7 +501,7 @@ function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
               <Text className="mt-1 text-base font-extrabold text-foreground">{formatCurrency(totalPurchase)}</Text>
             </View>
             <View className="flex-1 rounded-2xl border border-border bg-card p-3.5" style={cardShadow}>
-              <Text className="text-[11px] font-semibold text-muted-foreground">Satış</Text>
+              <Text className="text-[11px] font-semibold text-muted-foreground">Parça Satışı</Text>
               <Text className="mt-1 text-base font-extrabold text-foreground">{formatCurrency(totalSale)}</Text>
             </View>
             <View className="flex-1 rounded-2xl border border-border bg-card p-3.5" style={cardShadow}>
@@ -680,10 +681,12 @@ function AccountLedgerScreen({ onBack }: { onBack: () => void }) {
             <View className="flex-1 rounded-2xl border border-border bg-card p-4" style={cardShadow}>
               <Text className="text-xs font-semibold text-muted-foreground">Toplam Borç</Text>
               <Text className="mt-1 text-lg font-extrabold text-destructive">{formatCurrency(totalDebit)}</Text>
+              <Text className="mt-0.5 text-[10px] text-muted-foreground">İş emri + tedarikçi alış</Text>
             </View>
             <View className="flex-1 rounded-2xl border border-border bg-card p-4" style={cardShadow}>
-              <Text className="text-xs font-semibold text-muted-foreground">Toplam Alacak/Tahsilat</Text>
+              <Text className="text-xs font-semibold text-muted-foreground">Tahsilat / Ödeme</Text>
               <Text className="mt-1 text-lg font-extrabold text-chart-2">{formatCurrency(totalCredit)}</Text>
+              <Text className="mt-0.5 text-[10px] text-muted-foreground">Müşteri tahsilat + tedarikçi ödeme</Text>
             </View>
           </View>
 
@@ -843,24 +846,31 @@ function SalesReportScreen({ onBack }: { onBack: () => void }) {
               {formatCurrency(report.totalRevenue)}
             </Text>
             <Text className="mt-0.5 text-xs text-background/60">
-              {report.workOrderCount} iş emri · İskonto {formatCurrency(report.totalDiscount)}
+              Dönemde açılan {report.workOrderCount} iş emri · İskonto{' '}
+              {formatCurrency(report.totalDiscount)}
             </Text>
           </View>
 
           <View className="mt-3 flex-row gap-3">
             <View className="flex-1 rounded-2xl border border-border bg-card p-4" style={cardShadow}>
-              <Text className="text-xs font-semibold text-muted-foreground">Tahsilat</Text>
-              <Text className="mt-1 text-lg font-extrabold text-chart-2">{formatCurrency(report.totalPaid)}</Text>
+              <Text className="text-xs font-semibold text-muted-foreground">Dönem Tahsilatı</Text>
+              <Text className="mt-1 text-lg font-extrabold text-chart-2">
+                {formatCurrency(report.totalPaid)}
+              </Text>
+              <Text className="mt-0.5 text-[10px] text-muted-foreground">Bu aralıkta alınan ödemeler</Text>
             </View>
             <View className="flex-1 rounded-2xl border border-border bg-card p-4" style={cardShadow}>
-              <Text className="text-xs font-semibold text-muted-foreground">Kalan</Text>
+              <Text className="text-xs font-semibold text-muted-foreground">Açık Bakiye</Text>
               <Text className="mt-1 text-lg font-extrabold text-destructive">
-                {formatCurrency(Math.max(0, report.totalRevenue - report.totalPaid))}
+                {formatCurrency(report.totalOutstanding ?? 0)}
               </Text>
+              <Text className="mt-0.5 text-[10px] text-muted-foreground">Dönem işlerinden kalan</Text>
             </View>
           </View>
 
-          <Text className="mb-2 mt-5 text-sm font-bold text-muted-foreground">Ödeme Yöntemi Dağılımı</Text>
+          <Text className="mb-2 mt-5 text-sm font-bold text-muted-foreground">
+            Ödeme Yöntemi · dönem tahsilatı dağılımı
+          </Text>
           <View className="flex flex-col gap-2">
             {(
               [

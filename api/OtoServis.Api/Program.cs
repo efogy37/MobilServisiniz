@@ -91,8 +91,11 @@ app.UseCors();
 
 Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads"));
 Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "releases"));
+Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "apk", "ios", "mobilservisiniz"));
 var staticTypes = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
 staticTypes.Mappings[".apk"] = "application/vnd.android.package-archive";
+staticTypes.Mappings[".ipa"] = "application/octet-stream";
+staticTypes.Mappings[".plist"] = "application/xml";
 app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = staticTypes });
 
 app.UseAuthentication();

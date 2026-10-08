@@ -10,6 +10,18 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
         ? tenant.ShopId
         : throw new InvalidOperationException("Servis seçilmedi.");
 
+    /// <summary>Türkiye takvim günü → UTC penceresi (UTC+3). API raporlarıyla aynı sınır.</summary>
+    private static (DateTime? FromUtc, DateTime? ToUtc) TurkeyDateRange(DateTime? from, DateTime? to)
+    {
+        DateTime? fromUtc = from.HasValue
+            ? DateOnly.FromDateTime(from.Value).ToDateTime(TimeOnly.MinValue).AddHours(-3)
+            : null;
+        DateTime? toUtc = to.HasValue
+            ? DateOnly.FromDateTime(to.Value).AddDays(1).ToDateTime(TimeOnly.MinValue).AddHours(-3)
+            : null;
+        return (fromUtc, toUtc);
+    }
+
     public void BindTenant(ClaimsPrincipal user)
     {
         var shopId = user.GetShopId();
@@ -169,20 +181,26 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
               ORDER BY r.sort_order",
             new { ShopId })).ToList();
 
+        // Türkiye ay başı (UTC+3) → UTC: GETUTCDATE()+3h ile ay, sonra -3h
         var month = await conn.QuerySingleAsync<dynamic>(
-            @"SELECT COUNT(*) AS Cnt, ISNULL(SUM(t.grand_total),0) AS Revenue,
+            @"DECLARE @trMonthStart date = DATEFROMPARTS(
+                  YEAR(DATEADD(HOUR, 3, GETUTCDATE())),
+                  MONTH(DATEADD(HOUR, 3, GETUTCDATE())),
+                  1);
+              DECLARE @monthStartUtc datetime2 = DATEADD(HOUR, -3, CAST(@trMonthStart AS datetime2));
+              SELECT COUNT(*) AS Cnt, ISNULL(SUM(t.grand_total),0) AS Revenue,
                      (SELECT COUNT(DISTINCT wo2.vehicle_id) FROM dbo.work_orders wo2
                       WHERE wo2.shop_id = @ShopId
-                        AND wo2.opened_at >= DATEFROMPARTS(YEAR(GETUTCDATE()), MONTH(GETUTCDATE()), 1)) AS VehiclesServiced,
+                        AND wo2.opened_at >= @monthStartUtc) AS VehiclesServiced,
                      ((SELECT COUNT(*) FROM dbo.services s WHERE s.shop_id = @ShopId
-                       AND s.created_at >= DATEFROMPARTS(YEAR(GETUTCDATE()), MONTH(GETUTCDATE()), 1)) +
+                       AND s.created_at >= @monthStartUtc) +
                       (SELECT COUNT(*) FROM dbo.work_order_parts p WHERE p.shop_id = @ShopId
-                       AND p.created_at >= DATEFROMPARTS(YEAR(GETUTCDATE()), MONTH(GETUTCDATE()), 1))
+                       AND p.created_at >= @monthStartUtc)
                      ) AS Operations
               FROM dbo.work_orders wo
               LEFT JOIN dbo.vw_WorkOrderTotals t ON t.id = wo.id
               WHERE wo.shop_id = @ShopId
-                AND wo.opened_at >= DATEFROMPARTS(YEAR(GETUTCDATE()), MONTH(GETUTCDATE()), 1)",
+                AND wo.opened_at >= @monthStartUtc",
             new { ShopId });
 
         return new ReportsHubViewModel
@@ -199,8 +217,7 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
         string? status = null, DateTime? from = null, DateTime? to = null)
     {
         await using var conn = await db.OpenAsync();
-        DateTime? fromDate = from?.Date;
-        DateTime? toExclusive = to?.Date.AddDays(1);
+        var (fromDate, toExclusive) = TurkeyDateRange(from, to);
 
         var statusSql = @"SELECT wo.status AS Status, r.label AS Label, COUNT(*) AS Count
               FROM dbo.work_orders wo
@@ -249,8 +266,7 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
     public async Task<RevenueReportViewModel> GetRevenueReportAsync(DateTime? from = null, DateTime? to = null)
     {
         await using var conn = await db.OpenAsync();
-        DateTime? fromDate = from?.Date;
-        DateTime? toExclusive = to?.Date.AddDays(1);
+        var (fromDate, toExclusive) = TurkeyDateRange(from, to);
         var hasRange = fromDate.HasValue || toExclusive.HasValue;
 
         var totalsSql = @"SELECT COUNT(*) AS WorkOrderCount,
@@ -302,8 +318,7 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
         string? category = null, DateTime? from = null, DateTime? to = null)
     {
         await using var conn = await db.OpenAsync();
-        DateTime? fromDate = from?.Date;
-        DateTime? toExclusive = to?.Date.AddDays(1);
+        var (fromDate, toExclusive) = TurkeyDateRange(from, to);
 
         var categories = (await conn.QueryAsync<StockCategoryOption>(
             @"SELECT code AS Code, label AS Label FROM dbo.ref_stock_categories ORDER BY sort_order",
@@ -346,8 +361,7 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
     public async Task<CustomerReportViewModel> GetCustomerReportAsync(DateTime? from = null, DateTime? to = null)
     {
         await using var conn = await db.OpenAsync();
-        DateTime? fromDate = from?.Date;
-        DateTime? toExclusive = to?.Date.AddDays(1);
+        var (fromDate, toExclusive) = TurkeyDateRange(from, to);
 
         // VehicleCount müşterinin sahip olduğu tüm aktif araçları gösterir (tarihten bağımsız);
         // WorkOrderCount/TotalRevenue/PaidTotal, from/to verildiğinde o aralıkta açılan iş emirlerine göre süzülür.
@@ -517,31 +531,35 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
     public async Task<SupplierReportViewModel> GetSupplierReportAsync(string? period, DateTime? date)
     {
         var p = period == "weekly" ? "weekly" : "daily";
-        var d = (date ?? DateTime.UtcNow).Date;
-        DateTime from, to;
+        var turkeyToday = DateTime.UtcNow.AddHours(3).Date;
+        var d = (date ?? turkeyToday).Date;
+        DateOnly fromDay, toDay;
         if (p == "weekly")
         {
             var diff = ((int)d.DayOfWeek + 6) % 7;
-            from = d.AddDays(-diff);
-            to = from.AddDays(7);
+            fromDay = DateOnly.FromDateTime(d.AddDays(-diff));
+            toDay = fromDay.AddDays(6);
         }
         else
         {
-            from = d;
-            to = d.AddDays(1);
+            fromDay = DateOnly.FromDateTime(d);
+            toDay = fromDay;
         }
+        var (from, to) = TurkeyDateRange(fromDay.ToDateTime(TimeOnly.MinValue), toDay.ToDateTime(TimeOnly.MinValue));
 
         await using var conn = await db.OpenAsync();
         var rows = (await conn.QueryAsync<SupplierReportRow>(
             @"SELECT s.id AS SupplierId, s.full_name AS SupplierName,
                      ISNULL(SUM(CASE WHEN st.type = N'alis' THEN st.amount ELSE 0 END), 0) AS TotalPurchases,
                      ISNULL(SUM(CASE WHEN st.type = N'iade' THEN st.amount ELSE 0 END), 0) AS TotalReturns,
-                     COUNT(st.id) AS TransactionCount
+                     SUM(CASE WHEN st.type IN (N'alis', N'iade') THEN 1 ELSE 0 END) AS TransactionCount
               FROM dbo.customers s
               INNER JOIN dbo.supplier_transactions st ON st.supplier_id = s.id
               WHERE s.shop_id = @ShopId AND st.shop_id = @ShopId AND s.is_supplier = 1
                 AND st.created_at >= @from AND st.created_at < @to
+                AND st.type IN (N'alis', N'iade')
               GROUP BY s.id, s.full_name
+              HAVING SUM(CASE WHEN st.type IN (N'alis', N'iade') THEN 1 ELSE 0 END) > 0
               ORDER BY TotalPurchases DESC",
             new { ShopId, from, to })).ToList();
 

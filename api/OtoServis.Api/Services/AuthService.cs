@@ -40,18 +40,33 @@ public class AuthService(DbFactory db, IConfiguration config)
         if (!string.IsNullOrWhiteSpace(tenantCode))
         {
             var shop = await ResolveShopAsync(conn, tenantCode);
-            if (shop is null) return null;
-            active = shops.FirstOrDefault(s => s.ShopId == shop.ShopId);
-            if (active is null) return null;
+            if (shop is not null)
+                active = shops.FirstOrDefault(s => s.ShopId == shop.ShopId);
         }
-        else
+        if (active is null)
         {
             Guid? defaultShopId = user.DefaultShopId as Guid?;
-            active = shops.FirstOrDefault(s => s.IsDefault)
-                     ?? (defaultShopId.HasValue
-                         ? shops.FirstOrDefault(s => s.ShopId == defaultShopId.Value)
-                         : null)
-                     ?? shops[0];
+            var preferred = shops.FirstOrDefault(s => s.IsDefault)
+                            ?? (defaultShopId.HasValue
+                                ? shops.FirstOrDefault(s => s.ShopId == defaultShopId.Value)
+                                : null);
+            var ordered = preferred is null
+                ? shops
+                : new[] { preferred }.Concat(shops.Where(s => s.ShopId != preferred.ShopId)).ToList();
+
+            foreach (var candidate in ordered)
+            {
+                var candLic = await ShopLicenseHelper.GetForShopAsync(conn, candidate.ShopId)
+                    ?? ShopLicenseHelper.Evaluate("unlimited", null);
+                if (candLic.LicenseStatus != "expired")
+                {
+                    active = candidate;
+                    break;
+                }
+            }
+
+            if (active is null)
+                throw new ShopLicenseExpiredException();
         }
 
         var license = await ShopLicenseHelper.GetForShopAsync(conn, active.ShopId)
@@ -253,8 +268,12 @@ public class TenantService(DbFactory db, TenantContext tenant)
         tenant.IsSet ? tenant.Role : throw new UnauthorizedAccessException("Oturum gerekli.");
 
     /// <summary>Servis yöneticisi servisteki tüm iş emirlerini görür.</summary>
-    public bool CanSeeAllWorkOrders() =>
-        string.Equals(RequireRole(), "admin", StringComparison.OrdinalIgnoreCase);
+    public bool CanSeeAllWorkOrders()
+    {
+        var role = RequireRole();
+        return string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(role, "usta", StringComparison.OrdinalIgnoreCase);
+    }
 
     public async Task<SqlConnection> OpenAsync()
     {

@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
-import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy'
+import { readUriAsBase64 } from '@/lib/read-base64'
 import { ArrowLeft, Check, FileText, Keyboard, Plus, Trash2, Truck } from 'lucide-react-native'
 import { cn } from '@/lib/utils'
 import {
@@ -116,7 +116,7 @@ export function SupplierImport({
 
       const asset = picked.assets[0]
       setScanning(true)
-      const base64 = await readAsStringAsync(asset.uri, { encoding: EncodingType.Base64 })
+      const base64 = await readUriAsBase64(asset.uri)
       const result = await scanInvoiceApi(base64, asset.mimeType ?? 'application/pdf')
       if (!result.lines.length) {
         setError('PDF’den ürün satırı okunamadı.')

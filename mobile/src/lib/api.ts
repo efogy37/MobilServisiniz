@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage'
 import { File } from 'expo-file-system'
 import { fetch as expoFetch } from 'expo/fetch'
+import { Platform } from 'react-native'
 import { API_BASE_URL } from './api-config'
 import type {
   ComplaintCategory,
@@ -387,7 +388,7 @@ function mapStatus(s: string): JobStatus {
   return 'bekliyor'
 }
 
-function mapFuel(f: string): string {
+export function mapFuel(f: string): string {
   const x = f.trim().toLowerCase()
   if (x.includes('diz')) return 'dizel'
   if (x.includes('benz')) return 'benzin'
@@ -504,11 +505,16 @@ function mapWorkOrder(wo: WoDetail): Vehicle {
   }
 }
 
+export async function getStoredShopName(): Promise<string | null> {
+  return AsyncStorage.getItem(SHOP_NAME_KEY)
+}
+
 export async function loginUser(
   identifier: string,
   password: string,
 ): Promise<AuthResult> {
   try {
+    const storedTenant = (await AsyncStorage.getItem(TENANT_CODE_KEY))?.trim()
     const res = await api<{
       token: string
       user: { id: string; fullName: string }
@@ -520,6 +526,7 @@ export async function loginUser(
       body: JSON.stringify({
         identifier: identifier.trim(),
         password,
+        tenantCode: storedTenant || undefined,
       }),
     }, false)
 
@@ -1050,6 +1057,37 @@ export async function createVehicleApi(
   return refreshVehicle(res.workOrderId)
 }
 
+export type VehicleInfoPayload = {
+  plate: string
+  brand: string
+  model: string
+  year: string
+  color: string
+  fuel: string
+  chassis: string
+  engineNo: string
+  engineVolume: string
+  km: string
+}
+
+export async function updateVehicleApi(id: string, data: VehicleInfoPayload): Promise<void> {
+  await api<void>(`/api/vehicles/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      plate: data.plate.trim().toUpperCase(),
+      brand: data.brand.trim(),
+      model: data.model.trim(),
+      modelYear: data.year ? parseInt(data.year, 10) || null : null,
+      color: data.color.trim() || null,
+      fuel: mapFuel(data.fuel),
+      chassisNo: data.chassis ? data.chassis.trim().toUpperCase() : null,
+      engineNo: data.engineNo.trim() || null,
+      engineVolume: data.engineVolume.trim() || null,
+      mileage: data.km ? parseInt(data.km.replace(/\D/g, ''), 10) || null : null,
+    }),
+  })
+}
+
 export async function refreshVehicle(workOrderId: string): Promise<Vehicle> {
   const wo = await api<WoDetail>(`/api/workorders/${workOrderId}`)
   return mapWorkOrder(wo)
@@ -1455,9 +1493,16 @@ export async function uploadWorkOrderImage(
 ): Promise<WorkOrderImage> {
   // RN/Expo yeni fetch FormData'da { uri, name, type } nesnesini kabul etmiyor
   // ("Unsupported FormDataPart implementation"). expo-file-system File + expo/fetch kullan.
-  const file = new File(imageUri)
+  // Tarayıcıda ise seçilen dosya blob adresidir; standart fetch ile yüklenir.
   const form = new FormData()
-  form.append('file', file as unknown as Blob)
+  if (Platform.OS === 'web') {
+    const blob = await fetch(imageUri).then((r) => r.blob())
+    const ext = blob.type.includes('png') ? 'png' : 'jpg'
+    form.append('file', blob, `photo.${ext}`)
+  } else {
+    const file = new File(imageUri)
+    form.append('file', file as unknown as Blob)
+  }
   form.append('imageType', imageType)
   if (complaintId) form.append('complaintId', complaintId)
   if (serviceId) form.append('serviceId', serviceId)
@@ -1778,6 +1823,8 @@ export type SalesReport = {
   totalRevenue: number
   totalPaid: number
   totalDiscount: number
+  /** Dönemde açılan iş emirlerinin hâlâ ödenmemiş bakiyesi. */
+  totalOutstanding: number
   nakit: number
   kart: number
   havale: number

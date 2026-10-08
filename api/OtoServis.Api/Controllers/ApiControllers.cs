@@ -304,6 +304,29 @@ public class VehiclesController(DataService data) : ControllerBase
         }
     }
 
+    [HttpPut("{id:guid}")]
+    public async Task<ActionResult<VehicleDto>> Update(Guid id, [FromBody] UpdateVehicleRequest req)
+    {
+        if (string.IsNullOrWhiteSpace(req.Plate) ||
+            string.IsNullOrWhiteSpace(req.Brand) ||
+            string.IsNullOrWhiteSpace(req.Model))
+            return BadRequest(new { error = "Plaka, marka ve model zorunludur." });
+
+        try
+        {
+            var updated = await data.UpdateVehicleAsync(id, req, User.GetUserId());
+            return updated is null ? NotFound(new { error = "Araç bulunamadı." }) : Ok(updated);
+        }
+        catch (VehiclePlateConflictException ex)
+        {
+            return Conflict(ex.Conflict);
+        }
+        catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 2601 or 2627)
+        {
+            return Conflict(new { error = "Bu plaka zaten kayıtlı." });
+        }
+    }
+
     [HttpPost("{id:guid}/transfer")]
     public async Task<ActionResult<TransferVehicleResponse>> Transfer(Guid id, [FromBody] TransferVehicleRequest req)
     {
@@ -726,7 +749,7 @@ public class StaffController(DataService data) : ControllerBase
     {
         try
         {
-            var d = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var d = date ?? DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3));
             var rows = await data.GetStaffPerformanceAsync(d, User.GetShopRole(), User.GetUserId(), userId);
             return Ok(rows);
         }
@@ -773,13 +796,14 @@ public class SuppliersController(DataService data, PlanEntitlementsService plans
             await plans.RequireFeatureAsync("suppliers");
             if (from.HasValue || to.HasValue)
             {
-                var f = from ?? to ?? DateOnly.FromDateTime(DateTime.UtcNow);
+                var turkeyToday = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3));
+                var f = from ?? to ?? turkeyToday;
                 var t = to ?? from ?? f;
                 return Ok(await data.GetSupplierReportAsync(f, t));
             }
 
             var p = period == "weekly" ? "weekly" : "daily";
-            var d = date ?? DateOnly.FromDateTime(DateTime.UtcNow);
+            var d = date ?? DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3));
             return Ok(await data.GetSupplierReportAsync(p, d));
         }
         catch (PlanFeatureDeniedException ex) { return ex.ToActionResult(); }

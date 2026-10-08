@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton<DbFactory>();
 builder.Services.AddScoped<PlatformAuthService>();
 builder.Services.AddScoped<PlatformDataService>();
+builder.Services.AddSingleton<IosOtaService>();
 
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
     .AddCookie(opt =>
@@ -22,11 +23,11 @@ builder.Services.AddControllersWithViews();
 builder.Services.AddAuthorization();
 builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(opt =>
 {
-    opt.MultipartBodyLengthLimit = 120_000_000;
+    opt.MultipartBodyLengthLimit = 250_000_000;
 });
 builder.WebHost.ConfigureKestrel(opt =>
 {
-    opt.Limits.MaxRequestBodySize = 120_000_000;
+    opt.Limits.MaxRequestBodySize = 250_000_000;
 });
 
 var app = builder.Build();

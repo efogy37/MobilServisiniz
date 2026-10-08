@@ -5,6 +5,7 @@ import {
   Image,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   Share,
@@ -14,7 +15,7 @@ import {
 } from 'react-native'
 import * as ImagePicker from 'expo-image-picker'
 import * as DocumentPicker from 'expo-document-picker'
-import { readAsStringAsync, EncodingType } from 'expo-file-system/legacy'
+import { readUriAsBase64 } from '@/lib/read-base64'
 import * as Print from 'expo-print'
 import * as Sharing from 'expo-sharing'
 import {
@@ -45,6 +46,7 @@ import {
   MessageCircle,
   Banknote,
   Landmark,
+  Sparkles,
 } from 'lucide-react-native'
 import { cn } from '@/lib/utils'
 import {
@@ -86,10 +88,12 @@ import {
   listStockProducts,
   listSuppliers,
   listWorkOrderPayments,
+  mapFuel,
   recordSupplierPayment,
   scanInvoiceApi,
   uploadWorkOrderImage,
   type InvoiceScanLine,
+  type VehicleInfoPayload,
   type ShopPaymentInfo,
   WorkOrderCompletedError,
   WorkOrderReopenBlockedError,
@@ -100,6 +104,7 @@ import {
   type ServiceCatalogCategory,
   type ServiceCatalogItem,
 } from '@/lib/service-catalog'
+import { scanRuhsat } from '@/lib/ai-scan'
 
 const ASSIGNABLE_ROLES = ['admin', 'usta']
 
@@ -190,6 +195,14 @@ function buildSummaryText(vehicle: Vehicle): string {
   return lines.join('\n')
 }
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
 function buildSummaryHtml(vehicle: Vehicle): string {
   const activeProducts = vehicle.products.filter((p) => !p.returnedAt)
   const laborTotal = vehicle.laborTotal ?? vehicle.services.reduce((s, i) => s + i.price, 0)
@@ -199,13 +212,14 @@ function buildSummaryHtml(vehicle: Vehicle): string {
 
   const serviceRows = vehicle.services
     .map(
-      (s) => `<tr><td>${s.title}</td><td class="right">${formatCurrency(s.price)}</td></tr>`,
+      (s) =>
+        `<tr><td>${escapeHtml(s.title)}</td><td class="right">${formatCurrency(s.price)}</td></tr>`,
     )
     .join('')
   const productRows = activeProducts
     .map(
       (p) =>
-        `<tr><td>${p.name} (${p.quantity} adet)</td><td class="right">${formatCurrency(p.price * p.quantity)}</td></tr>`,
+        `<tr><td>${escapeHtml(p.name)} (${p.quantity} adet)</td><td class="right">${formatCurrency(p.price * p.quantity)}</td></tr>`,
     )
     .join('')
 
@@ -226,10 +240,10 @@ function buildSummaryHtml(vehicle: Vehicle): string {
 </style>
 </head>
 <body>
-  <h1>${vehicle.plate} — ${vehicle.brand} ${vehicle.model}</h1>
+  <h1>${escapeHtml(vehicle.plate)} — ${escapeHtml(vehicle.brand)} ${escapeHtml(vehicle.model)}</h1>
   <div class="meta">
-    Müşteri: ${vehicle.customer.name}<br/>
-    Durum: ${STATUS_LABELS[vehicle.status]}
+    Müşteri: ${escapeHtml(vehicle.customer.name)}<br/>
+    Durum: ${escapeHtml(STATUS_LABELS[vehicle.status])}
   </div>
 
   ${vehicle.services.length > 0 ? `<h2>İşlemler</h2><table>${serviceRows}</table>` : ''}
@@ -245,7 +259,54 @@ function buildSummaryHtml(vehicle: Vehicle): string {
 </html>`
 }
 
+function openPrintPreview(html: string) {
+  document.getElementById('ms-print-frame')?.remove()
+
+  const frame = document.createElement('iframe')
+  frame.id = 'ms-print-frame'
+  frame.setAttribute('title', 'İş emri önizleme')
+  frame.style.cssText =
+    'position:fixed;inset:0;width:100%;height:100%;border:0;background:#fff;z-index:2147483647;'
+  document.body.appendChild(frame)
+
+  const doc = frame.contentDocument
+  const win = frame.contentWindow
+  if (!doc || !win) {
+    frame.remove()
+    Alert.alert('Yazdırma', 'PDF önizlemesi açılamadı.')
+    return
+  }
+
+  const withActions = html.replace(
+    '</body>',
+    `<div class="noprint" style="position:sticky;bottom:0;display:flex;gap:8px;padding:12px 16px calc(12px + env(safe-area-inset-bottom, 0px));background:#fff;border-top:1px solid #e5e7eb;">
+      <button id="ms-print" type="button" style="flex:1;height:48px;border:0;border-radius:12px;background:#2f4a86;color:#fff;font-weight:700;font-size:16px;">PDF / Yazdır</button>
+      <button id="ms-close" type="button" style="flex:1;height:48px;border:0;border-radius:12px;background:#e8eaef;color:#2b3244;font-weight:700;font-size:16px;">Kapat</button>
+    </div>
+    <style>@media print { .noprint { display: none !important; } }</style>
+    </body>`,
+  )
+
+  const bind = () => {
+    doc.getElementById('ms-print')?.addEventListener('click', () => {
+      win.focus()
+      win.print()
+    })
+    doc.getElementById('ms-close')?.addEventListener('click', () => frame.remove())
+  }
+
+  doc.open()
+  doc.write(withActions)
+  doc.close()
+  if (doc.readyState === 'complete') bind()
+  else frame.addEventListener('load', bind, { once: true })
+}
+
 async function sharePdf(vehicle: Vehicle) {
+  if (Platform.OS === 'web') {
+    openPrintPreview(buildSummaryHtml(vehicle))
+    return
+  }
   try {
     const { uri } = await Print.printToFileAsync({ html: buildSummaryHtml(vehicle) })
     const canShare = await Sharing.isAvailableAsync()
@@ -260,6 +321,15 @@ async function sharePdf(vehicle: Vehicle) {
 }
 
 async function shareAsText(vehicle: Vehicle) {
+  if (Platform.OS === 'web') {
+    try {
+      await navigator.clipboard.writeText(buildSummaryText(vehicle))
+      Alert.alert('Kopyalandı', 'İş özeti panoya kopyalandı.')
+    } catch (e) {
+      showError(e)
+    }
+    return
+  }
   try {
     await Share.share({ message: buildSummaryText(vehicle) })
   } catch (e) {
@@ -313,6 +383,7 @@ export function VehicleDetail({
   onUpdateDiscount,
   onOpenNewVisit,
   onDeleteWaiting,
+  onUpdateVehicle,
 }: {
   vehicle: Vehicle
   serviceCatalog?: ServiceCatalogItem[]
@@ -346,6 +417,7 @@ export function VehicleDetail({
   onUpdateDiscount: (amount: number) => Promise<WorkOrderPaymentResult>
   onOpenNewVisit: (complaint?: string) => void
   onDeleteWaiting?: () => Promise<void>
+  onUpdateVehicle: (data: VehicleInfoPayload, opts?: { ruhsatUri?: string }) => Promise<void>
 }) {
   const serviceCatalog = catalogProp ?? defaultCatalog
   const [tab, setTab] = useState<Tab>('bilgiler')
@@ -354,6 +426,8 @@ export function VehicleDetail({
   const [payOpen, setPayOpen] = useState(false)
   const [ibanOpen, setIbanOpen] = useState(false)
   const [discountOpen, setDiscountOpen] = useState(false)
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [editPayment, setEditPayment] = useState<WorkOrderPayment | null>(null)
   const [payments, setPayments] = useState<WorkOrderPayment[]>([])
 
@@ -527,7 +601,7 @@ export function VehicleDetail({
             {vehicle.brand} {vehicle.model}
           </Text>
           <Text className="text-sm text-muted-foreground">
-            {vehicle.year} · {vehicle.color} · {vehicle.fuel}
+            {vehicle.year} · {vehicle.color} · {fuelLabel(vehicle.fuel)}
           </Text>
 
           <StatusStepper
@@ -547,22 +621,7 @@ export function VehicleDetail({
               </Pressable>
               {onDeleteWaiting ? (
                 <Pressable
-                  onPress={() => {
-                    Alert.alert(
-                      'Kaydı sil',
-                      `${vehicle.plate} bekleyen kaydı sistemden silinsin mi?\nİşleme alınmamış kayıtlar silinebilir.`,
-                      [
-                        { text: 'İptal', style: 'cancel' },
-                        {
-                          text: 'Sil',
-                          style: 'destructive',
-                          onPress: () => {
-                            void onDeleteWaiting().catch(showError)
-                          },
-                        },
-                      ],
-                    )
-                  }}
+                  onPress={() => setDeleteOpen(true)}
                   className="h-12 flex-row items-center justify-center gap-2 rounded-xl border-2 border-destructive/40 bg-destructive/10 active:opacity-90"
                 >
                   <Trash2 size={18} color={colors.destructive} />
@@ -757,7 +816,9 @@ export function VehicleDetail({
         </View>
 
         <View className="px-5 py-5">
-          {tab === 'bilgiler' && <InfoTab vehicle={vehicle} />}
+          {tab === 'bilgiler' && (
+            <InfoTab vehicle={vehicle} onUpdateVehicle={onUpdateVehicle} />
+          )}
           {tab === 'sikayet' && (
             <ComplaintTab
               vehicle={vehicle}
@@ -888,6 +949,33 @@ export function VehicleDetail({
         vehicle={vehicle}
         onClose={() => setShareOpen(false)}
       />
+
+      <AppSheet
+        visible={deleteOpen}
+        onClose={() => {
+          if (!deleting) setDeleteOpen(false)
+        }}
+        title="Kaydı sil"
+        subtitle={`${vehicle.plate} bekleyen kaydı sistemden silinsin mi? İşleme alınmamış kayıtlar silinebilir.`}
+      >
+        <Pressable
+          disabled={deleting}
+          onPress={() => {
+            if (!onDeleteWaiting) return
+            setDeleting(true)
+            void onDeleteWaiting()
+              .then(() => setDeleteOpen(false))
+              .catch(showError)
+              .finally(() => setDeleting(false))
+          }}
+          className="h-12 items-center justify-center rounded-2xl bg-destructive active:opacity-90"
+        >
+          <Text className="text-sm font-extrabold text-white">
+            {deleting ? 'Siliniyor...' : 'Sil'}
+          </Text>
+        </Pressable>
+        <SheetCancelButton onPress={() => setDeleteOpen(false)} />
+      </AppSheet>
 
       <PaymentSheet
         visible={payOpen}
@@ -2022,48 +2110,357 @@ const STAFF_ROLE_LABELS: Record<string, string> = {
   personel: 'Personel',
 }
 
-function InfoTab({ vehicle }: { vehicle: Vehicle }) {
+const FUEL_OPTIONS = [
+  { value: 'benzin', label: 'Benzin' },
+  { value: 'dizel', label: 'Dizel' },
+  { value: 'lpg', label: 'LPG' },
+  { value: 'elektrik', label: 'Elektrik' },
+  { value: 'hibrit', label: 'Hibrit' },
+  { value: 'diger', label: 'Diğer' },
+]
+
+function fuelLabel(code: string) {
+  const mapped = mapFuel(code || '')
+  return FUEL_OPTIONS.find((o) => o.value === mapped)?.label ?? (code || '-')
+}
+
+function InfoTab({
+  vehicle,
+  onUpdateVehicle,
+}: {
+  vehicle: Vehicle
+  onUpdateVehicle: (data: VehicleInfoPayload, opts?: { ruhsatUri?: string }) => Promise<void>
+}) {
+  const [editing, setEditing] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const [scanOpen, setScanOpen] = useState(false)
+  const [photosVersion, setPhotosVersion] = useState(0)
+  const [ruhsatUri, setRuhsatUri] = useState<string | null>(null)
+  const [newRuhsatUri, setNewRuhsatUri] = useState<string | null>(null)
+
+  const [plate, setPlate] = useState(vehicle.plate)
+  const [brand, setBrand] = useState(vehicle.brand)
+  const [model, setModel] = useState(vehicle.model)
+  const [year, setYear] = useState(vehicle.year)
+  const [color, setColor] = useState(vehicle.color)
+  const [fuel, setFuel] = useState(mapFuel(vehicle.fuel || 'diger'))
+  const [chassis, setChassis] = useState(vehicle.chassis)
+  const [engineNo, setEngineNo] = useState(vehicle.engineNo)
+  const [engineVolume, setEngineVolume] = useState(vehicle.engineVolume)
+  const [km, setKm] = useState(vehicle.km)
+
+  function startEdit() {
+    setPlate(vehicle.plate)
+    setBrand(vehicle.brand)
+    setModel(vehicle.model)
+    setYear(vehicle.year)
+    setColor(vehicle.color)
+    setFuel(mapFuel(vehicle.fuel || 'diger'))
+    setChassis(vehicle.chassis)
+    setEngineNo(vehicle.engineNo)
+    setEngineVolume(vehicle.engineVolume)
+    setKm(vehicle.km)
+    setRuhsatUri(null)
+    setEditing(true)
+  }
+
+  function cancelEdit() {
+    setEditing(false)
+    setRuhsatUri(null)
+  }
+
+  async function saveEdit() {
+    const missing: string[] = []
+    if (!plate.trim()) missing.push('Plaka')
+    if (!brand.trim()) missing.push('Marka')
+    if (!model.trim()) missing.push('Model')
+    if (missing.length > 0) {
+      Alert.alert('Eksik bilgi', `Lütfen zorunlu alanları doldurun: ${missing.join(', ')}`)
+      return
+    }
+    setSaving(true)
+    try {
+      await onUpdateVehicle(
+        {
+          plate,
+          brand,
+          model,
+          year,
+          color,
+          fuel,
+          chassis,
+          engineNo,
+          engineVolume,
+          km,
+        },
+        ruhsatUri ? { ruhsatUri } : undefined,
+      )
+      setEditing(false)
+      setRuhsatUri(null)
+      setPhotosVersion((n) => n + 1)
+    } catch {
+      /* hata service-app içinde gösterilir */
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function addRuhsatPhoto(uri: string) {
+    const ok = await attachPhotoAfterSave(vehicle.workOrderId, uri, 'ruhsat')
+    if (ok) {
+      setNewRuhsatUri(null)
+      setPhotosVersion((n) => n + 1)
+    }
+  }
+
+  async function runRescan(source: 'camera' | 'gallery') {
+    try {
+      if (getCachedEntitlements()?.features.aiRuhsat === false) {
+        Alert.alert('Paket özelliği', 'AI ruhsat okuma bu pakette yok.')
+        return
+      }
+      const perm =
+        source === 'camera'
+          ? await ImagePicker.requestCameraPermissionsAsync()
+          : await ImagePicker.requestMediaLibraryPermissionsAsync()
+      if (!perm.granted) {
+        Alert.alert(
+          'İzin gerekli',
+          source === 'camera'
+            ? 'Ruhsatı çekmek için kamera iznini verin.'
+            : 'Ruhsat fotoğrafını seçmek için galeri iznini verin.',
+        )
+        return
+      }
+      const result =
+        source === 'camera'
+          ? await ImagePicker.launchCameraAsync({
+              mediaTypes: ['images'],
+              quality: 0.7,
+              base64: true,
+              exif: false,
+            })
+          : await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ['images'],
+              quality: 0.7,
+              base64: true,
+              exif: false,
+              allowsMultipleSelection: false,
+            })
+      if (result.canceled) return
+      const asset = result.assets?.[0]
+      if (!asset?.base64) {
+        Alert.alert('Hata', 'Fotoğraf okunamadı. Lütfen tekrar deneyin.')
+        return
+      }
+      setScanning(true)
+      setRuhsatUri(asset.uri)
+      const data = await scanRuhsat(asset.base64, asset.mimeType ?? 'image/jpeg')
+      if (data.plate) setPlate(data.plate)
+      if (data.brand) setBrand(data.brand)
+      if (data.model) setModel(data.model)
+      if (data.year) setYear(data.year)
+      if (data.color) setColor(data.color)
+      if (data.fuel) setFuel(mapFuel(data.fuel))
+      if (data.chassis) setChassis(data.chassis)
+      if (data.engineNo) setEngineNo(data.engineNo)
+      if (data.engineVolume) setEngineVolume(data.engineVolume)
+      if (!data.plate && !data.brand && !data.model) {
+        Alert.alert(
+          'Bilgi okunamadı',
+          'Ruhsattan bilgi çıkarılamadı. Daha net bir fotoğraf çekin veya bilgileri elle düzeltin.',
+        )
+      }
+    } catch (e) {
+      Alert.alert(
+        'Ruhsat okunamadı',
+        e instanceof Error ? e.message : 'Bilinmeyen bir hata oluştu. Alanları elle düzeltebilirsiniz.',
+      )
+    } finally {
+      setScanning(false)
+    }
+  }
+
   const rows = [
+    { label: 'Plaka', value: vehicle.plate },
     { label: 'Marka / Model', value: `${vehicle.brand} ${vehicle.model}` },
     { label: 'Model Yılı', value: vehicle.year },
     { label: 'Renk', value: vehicle.color },
-    { label: 'Yakıt', value: vehicle.fuel },
+    { label: 'Yakıt', value: fuelLabel(vehicle.fuel) },
     { label: 'Kilometre', value: vehicle.km ? `${vehicle.km} km` : '' },
     { label: 'Şasi No', value: vehicle.chassis, mono: true },
     { label: 'Motor No', value: vehicle.engineNo, mono: true },
     { label: 'Motor Hacmi', value: vehicle.engineVolume },
   ]
+
   return (
     <View className="flex flex-col gap-5">
-      <View className="rounded-2xl border border-border bg-card p-4" style={cardShadow}>
-        <View className="flex-row items-center gap-2">
-          <Info size={16} color={colors.primary} />
-          <Text className="text-sm font-bold text-muted-foreground">
-            Araç Bilgileri
-          </Text>
-        </View>
-        <View className="mt-3">
-          {rows.map((r, i) => (
-            <View
-              key={r.label}
-              className={cn(
-                'flex-row items-center justify-between py-2.5',
-                i > 0 && 'border-t border-border',
-              )}
-            >
-              <Text className="text-sm text-muted-foreground">{r.label}</Text>
-              <Text
-                className={cn(
-                  'text-sm font-bold text-foreground',
-                  r.mono && 'font-mono text-xs',
-                )}
-              >
-                {r.value || '-'}
+      {editing ? (
+        <View
+          className="flex flex-col gap-3 rounded-2xl border-2 border-primary/30 bg-card p-4"
+          style={cardShadow}
+        >
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center gap-2">
+              <Info size={16} color={colors.primary} />
+              <Text className="text-sm font-bold text-muted-foreground">
+                Araç Bilgilerini Düzenle
               </Text>
             </View>
-          ))}
+          </View>
+
+          <Pressable
+            onPress={() => setScanOpen(true)}
+            disabled={scanning}
+            className="h-12 flex-row items-center justify-center gap-2 rounded-xl bg-primary/10"
+          >
+            {scanning ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Sparkles size={16} color={colors.primary} />
+            )}
+            <Text className="text-sm font-bold text-primary">
+              {scanning ? 'Ruhsat okunuyor...' : 'Ruhsatı tekrar oku'}
+            </Text>
+          </Pressable>
+
+          <TextField
+            label="Plaka"
+            value={plate}
+            onChange={(v) => setPlate(v.toUpperCase())}
+            placeholder="Örn: 34 ABC 123"
+            required
+          />
+          <View className="flex-row gap-3">
+            <TextField
+              label="Marka"
+              value={brand}
+              onChange={setBrand}
+              placeholder="Örn: Toyota"
+              className="flex-1"
+              required
+            />
+            <TextField
+              label="Model"
+              value={model}
+              onChange={setModel}
+              placeholder="Örn: Corolla"
+              className="flex-1"
+              required
+            />
+          </View>
+          <View className="flex-row gap-3">
+            <TextField
+              label="Yıl"
+              value={year}
+              onChange={setYear}
+              inputMode="numeric"
+              placeholder="Örn: 2020"
+              className="flex-1"
+            />
+            <TextField
+              label="Renk"
+              value={color}
+              onChange={setColor}
+              placeholder="Örn: Beyaz"
+              className="flex-1"
+            />
+          </View>
+          <View className="flex-row gap-3">
+            <SelectField
+              label="Yakıt"
+              value={fuel}
+              onChange={setFuel}
+              options={FUEL_OPTIONS}
+              className="flex-1"
+            />
+            <TextField
+              label="Kilometre"
+              value={km}
+              onChange={setKm}
+              inputMode="numeric"
+              placeholder="Örn: 120000"
+              className="flex-1"
+            />
+          </View>
+          <TextField
+            label="Şasi No"
+            value={chassis}
+            onChange={(v) => setChassis(v.toUpperCase())}
+            placeholder="Örn: WVWZZZ..."
+          />
+          <View className="flex-row gap-3">
+            <TextField
+              label="Motor No"
+              value={engineNo}
+              onChange={setEngineNo}
+              placeholder="Örn: CXX..."
+              className="flex-1"
+            />
+            <TextField
+              label="Motor Hacmi"
+              value={engineVolume}
+              onChange={setEngineVolume}
+              placeholder="Örn: 1598 cm³"
+              className="flex-1"
+            />
+          </View>
+
+          {ruhsatUri ? (
+            <View className="flex-row items-center gap-3">
+              <Image source={{ uri: ruhsatUri }} resizeMode="cover" className="h-16 w-16 rounded-xl" />
+              <Text className="flex-1 text-xs font-semibold text-muted-foreground">
+                Yeni ruhsat fotoğrafı kayıtla birlikte yüklenecek.
+              </Text>
+            </View>
+          ) : null}
+
+          <View className="mt-1 flex-row gap-2">
+            <SaveButton onPress={() => void saveEdit()} disabled={saving || scanning} />
+            <CancelButton onPress={cancelEdit} />
+          </View>
         </View>
-      </View>
+      ) : (
+        <View className="rounded-2xl border border-border bg-card p-4" style={cardShadow}>
+          <View className="flex-row items-center justify-between">
+            <View className="flex-row items-center gap-2">
+              <Info size={16} color={colors.primary} />
+              <Text className="text-sm font-bold text-muted-foreground">
+                Araç Bilgileri
+              </Text>
+            </View>
+            <Pressable
+              onPress={startEdit}
+              className="h-9 flex-row items-center justify-center gap-1.5 rounded-lg bg-secondary px-3"
+            >
+              <Pencil size={14} color={colors.secondaryForeground} />
+              <Text className="text-xs font-bold text-secondary-foreground">Düzenle</Text>
+            </Pressable>
+          </View>
+          <View className="mt-3">
+            {rows.map((r, i) => (
+              <View
+                key={r.label}
+                className={cn(
+                  'flex-row items-center justify-between py-2.5',
+                  i > 0 && 'border-t border-border',
+                )}
+              >
+                <Text className="text-sm text-muted-foreground">{r.label}</Text>
+                <Text
+                  className={cn(
+                    'ml-3 flex-1 text-right text-sm font-bold text-foreground',
+                    r.mono && 'font-mono text-xs',
+                  )}
+                >
+                  {r.value || '-'}
+                </Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      )}
 
       <View className="rounded-2xl border border-border bg-card p-4" style={cardShadow}>
         <View className="flex-row items-center gap-2">
@@ -2093,6 +2490,51 @@ function InfoTab({ vehicle }: { vehicle: Vehicle }) {
           </View>
         ) : null}
       </View>
+
+      <View className="rounded-2xl border border-border bg-card p-4" style={cardShadow}>
+        <Text className="text-sm font-bold text-muted-foreground">Ruhsat fotoğrafı</Text>
+        <PhotoGallery
+          workOrderId={vehicle.workOrderId}
+          imageType="ruhsat"
+          refreshKey={photosVersion}
+          editable
+        />
+        <PhotoPicker
+          uri={newRuhsatUri}
+          onPick={(uri) => void addRuhsatPhoto(uri)}
+          onClear={() => setNewRuhsatUri(null)}
+        />
+      </View>
+
+      <AppSheet
+        visible={scanOpen}
+        onClose={() => setScanOpen(false)}
+        title="Ruhsatı tekrar oku"
+        subtitle="Yeni fotoğraf çekin veya galeriden seçin. Okunan bilgiler forma doldurulur."
+      >
+        <SheetActionList
+          onClose={() => setScanOpen(false)}
+          actions={[
+            {
+              key: 'camera',
+              label: 'Kamera',
+              description: 'Ruhsatı yeniden çek',
+              icon: Camera,
+              tone: 'accent',
+              onPress: () => void runRescan('camera'),
+            },
+            {
+              key: 'gallery',
+              label: 'Galeri',
+              description: 'Kayıtlı fotoğraftan oku',
+              icon: ImagePlus,
+              tone: 'primary',
+              onPress: () => void runRescan('gallery'),
+            },
+          ]}
+        />
+        <SheetCancelButton onPress={() => setScanOpen(false)} />
+      </AppSheet>
     </View>
   )
 }
@@ -2650,7 +3092,7 @@ function ProductTab({
 
       setPdfScanning(true)
       const asset = picked.assets[0]
-      const base64 = await readAsStringAsync(asset.uri, { encoding: EncodingType.Base64 })
+      const base64 = await readUriAsBase64(asset.uri)
       const result = await scanInvoiceApi(base64, asset.mimeType ?? 'application/pdf')
       if (!result.lines.length) {
         Alert.alert('PDF', 'PDF’den ürün satırı okunamadı.')

@@ -39,7 +39,7 @@ export function AppHeader({
 
   return (
     <View
-      className="border-b border-primary-foreground/10 bg-primary px-3 pb-2.5"
+      className="overflow-hidden border-b border-primary-foreground/10 bg-primary px-3 pb-2.5"
       style={{ paddingTop: insets.top + 4 }}
     >
       <View className="h-11 flex-row items-center gap-2.5">
@@ -51,11 +51,13 @@ export function AppHeader({
             <ArrowLeft size={18} color={colors.primaryForeground} />
           </Pressable>
         ) : (
-          <Image
-            source={require('../../assets/logo.png')}
-            className="h-8 w-8 rounded-lg"
-            resizeMode="cover"
-          />
+          <View className="h-8 w-8 overflow-hidden rounded-lg">
+            <Image
+              source={require('../../assets/logo.png')}
+              style={{ width: 32, height: 32 }}
+              resizeMode="cover"
+            />
+          </View>
         )}
 
         <View className="min-w-0 flex-1">
@@ -93,7 +95,15 @@ export function AppFooter({
   return (
     <View
       className="flex-row items-center justify-around border-t border-border bg-card px-2 pt-2"
-      style={{ paddingBottom: insets.bottom + 8, ...navShadow }}
+      style={
+        Platform.OS === 'web'
+          ? {
+              paddingBottom: 'calc(12px + env(safe-area-inset-bottom, 0px))',
+              backgroundColor: '#ffffff',
+              boxShadow: '0 -4px 20px rgba(0,0,0,0.05), 0 80px 0 0 #ffffff',
+            }
+          : { paddingBottom: insets.bottom + 8, ...navShadow }
+      }
     >
       {NAV_ITEMS.slice(0, 2).map((item) => (
         <NavButton

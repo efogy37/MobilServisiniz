@@ -11,9 +11,9 @@ Cloudflare Dashboard > ilgili domain > **DNS > Records > + Add record** ile 3 ka
 
 | Type | Name | Content (IPv4) | Proxy status | TTL |
 |---|---|---|---|---|
-| A | `api` | `37.148.211.243` | Proxied (turuncu bulut) | Auto |
-| A | `panel` | `37.148.211.243` | Proxied (turuncu bulut) | Auto |
-| A | `yonetim` | `37.148.211.243` | **DNS only** (gri bulut) | Auto |
+| A | `api` | `31.57.33.85` | Proxied (turuncu bulut) | Auto |
+| A | `panel` | `31.57.33.85` | Proxied (turuncu bulut) | Auto |
+| A | `yonetim` | `31.57.33.85` | **DNS only** (gri bulut) | Auto |
 
 `yonetim` icin DNS-only onerilir: Platform'un APK yukleme formu 120 MB'a kadar dosya kabul
 ediyor, Cloudflare Free plan istek govdesini 100 MB ile siniriyor. DNS-only oldugunda trafik

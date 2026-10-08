@@ -267,11 +267,39 @@
     </div>
 </div>
 
+<div class="row g-3 mb-4">
+    <div class="col-6 col-md-3">
+        <div class="stat-card h-100">
+            <div class="text-muted small">Müşteri</div>
+            <div class="fs-4 fw-bold">@Model.Stats.Customers</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="stat-card h-100">
+            <div class="text-muted small">Araç</div>
+            <div class="fs-4 fw-bold">@Model.Stats.Vehicles</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="stat-card h-100">
+            <div class="text-muted small">İş emri</div>
+            <div class="fs-4 fw-bold">@Model.Stats.WorkOrders</div>
+        </div>
+    </div>
+    <div class="col-6 col-md-3">
+        <div class="stat-card h-100">
+            <div class="text-muted small">Tahsilat</div>
+            <div class="fs-4 fw-bold">@Model.Stats.PaymentsTotal.ToString("N0") ₺</div>
+            <div class="small text-muted">@Model.Stats.PaymentsCount kayıt</div>
+        </div>
+    </div>
+</div>
+
 <div class="row g-4">
     <div class="col-lg-7">
         <div class="card border-0 shadow-sm">
             <div class="card-body">
-                <h2 class="h6 fw-bold mb-3">Durum hareketleri (30 gün)</h2>
+                <h2 class="h6 fw-bold mb-3">Durum hareketleri</h2>
                 <div class="table-responsive">
                     <table class="table table-sm align-middle mb-0">
                         <thead class="table-light">
@@ -318,7 +346,7 @@
     <div class="col-lg-5">
         <div class="card border-0 shadow-sm">
             <div class="card-body">
-                <h2 class="h6 fw-bold mb-3">Ödemeler (30 gün)</h2>
+                <h2 class="h6 fw-bold mb-3">Ödemeler</h2>
                 <div class="table-responsive">
                     <table class="table table-sm align-middle mb-0">
                         <thead class="table-light">

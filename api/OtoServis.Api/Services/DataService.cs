@@ -75,15 +75,18 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
             new { shopId });
         if (dash is null) return null;
 
-        var monthStart = new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+        // Türkiye takvim ayı (UTC+3) → UTC penceresi; cash-today ile aynı gün sınırı.
+        var turkeyNow = DateTime.UtcNow.AddHours(3);
+        var turkeyMonthStart = new DateOnly(turkeyNow.Year, turkeyNow.Month, 1);
+        var monthStartUtc = turkeyMonthStart.ToDateTime(TimeOnly.MinValue).AddHours(-3);
         var month = await conn.QuerySingleAsync<dynamic>(
             @"SELECT
                 (SELECT COUNT(DISTINCT wo.vehicle_id) FROM dbo.work_orders wo
-                 WHERE wo.shop_id = @shopId AND wo.opened_at >= @monthStart) AS VehiclesServiced,
-                ((SELECT COUNT(*) FROM dbo.services s WHERE s.shop_id = @shopId AND s.created_at >= @monthStart) +
-                 (SELECT COUNT(*) FROM dbo.work_order_parts p WHERE p.shop_id = @shopId AND p.created_at >= @monthStart)
+                 WHERE wo.shop_id = @shopId AND wo.opened_at >= @monthStartUtc) AS VehiclesServiced,
+                ((SELECT COUNT(*) FROM dbo.services s WHERE s.shop_id = @shopId AND s.created_at >= @monthStartUtc) +
+                 (SELECT COUNT(*) FROM dbo.work_order_parts p WHERE p.shop_id = @shopId AND p.created_at >= @monthStartUtc)
                 ) AS Operations",
-            new { shopId, monthStart });
+            new { shopId, monthStartUtc });
 
         return new DashboardDto(
             (int)dash.Waiting, (int)dash.InProgress, (int)dash.Customers, (int)dash.Vehicles,
@@ -186,15 +189,48 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
 
     private static string NormalizePlate(string plate) => plate.Trim().ToUpperInvariant().Replace(" ", "");
 
-    private async Task<VehicleConflictDto?> FindPlateConflictAsync(SqlConnection conn, Guid shopId, string plateNorm)
+    private static readonly HashSet<string> FuelCodes = ["benzin", "dizel", "lpg", "elektrik", "hibrit", "diger"];
+
+    private static string NormalizeFuel(string? fuel)
+    {
+        var x = (fuel ?? "").Trim().ToLowerInvariant().Replace("\u0307", "");
+        if (FuelCodes.Contains(x)) return x;
+        if (x.Contains("diz")) return "dizel";
+        if (x.Contains("benz")) return "benzin";
+        if (x.Contains("lpg")) return "lpg";
+        if (x.Contains("elek")) return "elektrik";
+        if (x.Contains("hib")) return "hibrit";
+        return "diger";
+    }
+
+    private async Task<VehicleConflictDto?> FindPlateConflictAsync(
+        SqlConnection conn, Guid shopId, string plateNorm, Guid? excludeVehicleId = null)
     {
         return await conn.QuerySingleOrDefaultAsync<VehicleConflictDto>(
             @"SELECT TOP 1 v.id AS VehicleId, v.customer_id AS CustomerId, c.full_name AS CustomerName,
                      v.brand AS Brand, v.model AS Model
               FROM dbo.vehicles v
               INNER JOIN dbo.customers c ON c.id = v.customer_id
-              WHERE v.shop_id = @shopId AND v.plate_norm = @plateNorm AND v.is_active = 1",
-            new { shopId, plateNorm });
+              WHERE v.shop_id = @shopId AND v.plate_norm = @plateNorm AND v.is_active = 1
+                AND (@excludeVehicleId IS NULL OR v.id <> @excludeVehicleId)",
+            new { shopId, plateNorm, excludeVehicleId });
+    }
+
+    private async Task<VehicleDto?> GetVehicleByIdAsync(SqlConnection conn, Guid id, Guid shopId)
+    {
+        return await conn.QuerySingleOrDefaultAsync<VehicleDto>(
+            @"SELECT v.id AS Id, v.customer_id AS CustomerId, c.full_name AS CustomerName,
+                     v.plate AS Plate, v.brand AS Brand, v.model AS Model,
+                     CAST(v.model_year AS int) AS ModelYear,
+                     v.color AS Color, v.fuel AS Fuel, v.chassis_no AS ChassisNo,
+                     v.engine_no AS EngineNo, v.engine_volume AS EngineVolume,
+                     CAST(v.mileage AS int) AS Mileage,
+                     cs.status AS Status
+              FROM dbo.vehicles v
+              INNER JOIN dbo.customers c ON c.id = v.customer_id
+              LEFT JOIN dbo.vw_VehicleCurrentStatus cs ON cs.vehicle_id = v.id
+              WHERE v.id = @id AND v.shop_id = @shopId AND v.is_active = 1",
+            new { id, shopId });
     }
 
     public async Task<CreateVehicleResponse?> CreateVehicleAsync(CreateVehicleRequest req, Guid userId)
@@ -274,6 +310,70 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
             customerId: req.CustomerId, vehicleId: vehicleId);
 
         return vehicle is null ? null : new CreateVehicleResponse(vehicleId, woId, vehicle);
+    }
+
+    public async Task<VehicleDto?> UpdateVehicleAsync(Guid id, UpdateVehicleRequest req, Guid? userId = null)
+    {
+        var shopId = tenant.RequireShopId();
+        var plate = req.Plate.Trim().ToUpperInvariant();
+        var plateNorm = NormalizePlate(plate);
+        var fuel = NormalizeFuel(req.Fuel);
+        int? year = req.ModelYear is >= 1900 and <= 2100 ? req.ModelYear : null;
+        int? mileage = req.Mileage is >= 0 ? req.Mileage : null;
+
+        await using var conn = await tenant.OpenAsync();
+
+        var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            "SELECT customer_id AS CustomerId, plate AS Plate FROM dbo.vehicles WHERE id=@id AND shop_id=@shopId AND is_active=1",
+            new { id, shopId });
+        if (existing is null) return null;
+        Guid customerId = existing.CustomerId;
+
+        var conflict = await FindPlateConflictAsync(conn, shopId, plateNorm, id);
+        if (conflict is not null)
+            throw new VehiclePlateConflictException(conflict);
+
+        try
+        {
+            var n = await conn.ExecuteAsync(
+                @"UPDATE dbo.vehicles SET
+                    plate = @Plate, brand = @Brand, model = @Model,
+                    model_year = @Year, color = @Color, fuel = @Fuel,
+                    chassis_no = @ChassisNo, engine_no = @EngineNo,
+                    engine_volume = @EngineVolume, mileage = @Mileage,
+                    updated_at = SYSUTCDATETIME()
+                  WHERE id = @id AND shop_id = @shopId AND is_active = 1",
+                new
+                {
+                    id,
+                    shopId,
+                    Plate = plate,
+                    Brand = req.Brand.Trim(),
+                    Model = req.Model.Trim(),
+                    Year = year,
+                    Color = string.IsNullOrWhiteSpace(req.Color) ? null : req.Color.Trim(),
+                    Fuel = fuel,
+                    ChassisNo = string.IsNullOrWhiteSpace(req.ChassisNo) ? null : req.ChassisNo.Trim().ToUpperInvariant(),
+                    EngineNo = string.IsNullOrWhiteSpace(req.EngineNo) ? null : req.EngineNo.Trim(),
+                    EngineVolume = string.IsNullOrWhiteSpace(req.EngineVolume) ? null : req.EngineVolume.Trim(),
+                    Mileage = mileage,
+                });
+            if (n == 0) return null;
+        }
+        catch (SqlException ex) when (ex.Number is 2601 or 2627)
+        {
+            var raceConflict = await FindPlateConflictAsync(conn, shopId, plateNorm, id);
+            if (raceConflict is not null)
+                throw new VehiclePlateConflictException(raceConflict);
+            throw;
+        }
+
+        await ActivityLogService.LogAsync(
+            conn, shopId, userId, "updated", "vehicle", id,
+            $"Araç bilgileri güncellendi: {plate} ({req.Brand.Trim()} {req.Model.Trim()})",
+            customerId: customerId, vehicleId: id);
+
+        return await GetVehicleByIdAsync(conn, id, shopId);
     }
 
     public async Task<TransferVehicleResponse?> TransferVehicleOwnerAsync(Guid vehicleId, TransferVehicleRequest req, Guid userId)
@@ -925,8 +1025,9 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         var shopId = tenant.RequireShopId();
         await plans.RequireFeatureAsync("staff_performance");
         var effectiveUserId = callerRole == "personel" ? callerUserId : userId;
-        var from = date.ToDateTime(TimeOnly.MinValue);
-        var to = date.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        // Türkiye takvim günü → UTC (cash-today ile aynı)
+        var from = date.ToDateTime(TimeOnly.MinValue).AddHours(-3);
+        var to = date.AddDays(1).ToDateTime(TimeOnly.MinValue).AddHours(-3);
 
         await using var conn = await tenant.OpenAsync();
         var rows = await conn.QueryAsync<StaffPerformanceRow>(
@@ -1966,22 +2067,20 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         DateOnly fromInclusive, DateOnly toInclusive)
     {
         var shopId = tenant.RequireShopId();
-        if (toInclusive < fromInclusive)
-            (fromInclusive, toInclusive) = (toInclusive, fromInclusive);
-        // [from, to+1) — bitiş günü dahil
-        var from = fromInclusive.ToDateTime(TimeOnly.MinValue);
-        var to = toInclusive.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        var (from, to) = InclusiveDateRange(fromInclusive, toInclusive);
         await using var conn = await tenant.OpenAsync();
         var rows = await conn.QueryAsync<SupplierReportRow>(
             @"SELECT s.id AS SupplierId, s.full_name AS SupplierName,
                      ISNULL(SUM(CASE WHEN st.type = N'alis' THEN st.amount ELSE 0 END), 0) AS TotalPurchases,
                      ISNULL(SUM(CASE WHEN st.type = N'iade' THEN st.amount ELSE 0 END), 0) AS TotalReturns,
-                     COUNT(st.id) AS TransactionCount
+                     SUM(CASE WHEN st.type IN (N'alis', N'iade') THEN 1 ELSE 0 END) AS TransactionCount
               FROM dbo.customers s
               INNER JOIN dbo.supplier_transactions st ON st.supplier_id = s.id
               WHERE s.shop_id = @shopId AND st.shop_id = @shopId AND s.is_supplier = 1
                 AND st.created_at >= @from AND st.created_at < @to
+                AND st.type IN (N'alis', N'iade')
               GROUP BY s.id, s.full_name
+              HAVING SUM(CASE WHEN st.type IN (N'alis', N'iade') THEN 1 ELSE 0 END) > 0
               ORDER BY TotalPurchases DESC",
             new { shopId, from, to });
         return rows.ToList();
@@ -2000,14 +2099,23 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         return (monday, monday.AddDays(7));
     }
 
+    /// <summary>
+    /// Türkiye takvim günü aralığını UTC zaman penceresine çevirir (UTC+3, DST yok).
+    /// cash-today ile aynı gün sınırı; tüm dönem raporlarında kullanılır.
+    /// </summary>
     private static (DateTime From, DateTime To) InclusiveDateRange(DateOnly fromInclusive, DateOnly toInclusive)
     {
         if (toInclusive < fromInclusive)
             (fromInclusive, toInclusive) = (toInclusive, fromInclusive);
-        return (fromInclusive.ToDateTime(TimeOnly.MinValue), toInclusive.AddDays(1).ToDateTime(TimeOnly.MinValue));
+        var fromUtc = fromInclusive.ToDateTime(TimeOnly.MinValue).AddHours(-3);
+        var toUtc = toInclusive.AddDays(1).ToDateTime(TimeOnly.MinValue).AddHours(-3);
+        return (fromUtc, toUtc);
     }
 
-    /// <summary>Tarih aralığında en çok kullanılan/satılan stok ürünleri (miktara göre sıralı).</summary>
+    /// <summary>
+    /// Tarih aralığında en çok kullanılan/satılan ürünler.
+    /// Aynı isimli satırlar (stoktan + dışarıdan) tek satırda birleşir; aksi halde çift görünür.
+    /// </summary>
     public async Task<IReadOnlyList<StockUsageReportRow>> GetStockUsageReportAsync(DateOnly fromInclusive, DateOnly toInclusive)
     {
         var shopId = tenant.RequireShopId();
@@ -2015,7 +2123,9 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         var (from, to) = InclusiveDateRange(fromInclusive, toInclusive);
         await using var conn = await tenant.OpenAsync();
         var rows = await conn.QueryAsync<StockUsageReportRow>(
-            @"SELECT p.stock_product_id AS StockProductId, p.name AS Name, sp.category AS Category,
+            @"SELECT MAX(p.stock_product_id) AS StockProductId,
+                     MIN(LTRIM(RTRIM(p.name))) AS Name,
+                     MAX(sp.category) AS Category,
                      SUM(p.quantity) AS TotalQuantity,
                      SUM(p.quantity * p.unit_price) AS TotalRevenue,
                      COUNT(DISTINCT p.work_order_id) AS WorkOrderCount
@@ -2023,13 +2133,14 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
               LEFT JOIN dbo.stock_products sp ON sp.id = p.stock_product_id
               WHERE p.shop_id = @shopId AND p.returned_at IS NULL
                 AND p.created_at >= @from AND p.created_at < @to
-              GROUP BY p.stock_product_id, p.name, sp.category
+                AND LTRIM(RTRIM(ISNULL(p.name, N''))) <> N''
+              GROUP BY LTRIM(RTRIM(p.name)) COLLATE Turkish_CI_AS
               ORDER BY SUM(p.quantity) DESC",
             new { shopId, from, to });
         return rows.ToList();
     }
 
-    /// <summary>Ürün bazlı alış (maliyet) / satış (ciro) / kâr özeti.</summary>
+    /// <summary>Ürün bazlı alış/satış/kâr — aynı isimler tek satırda toplanır.</summary>
     public async Task<IReadOnlyList<StockPurchaseSaleRow>> GetStockPurchaseSaleReportAsync(DateOnly fromInclusive, DateOnly toInclusive)
     {
         var shopId = tenant.RequireShopId();
@@ -2037,7 +2148,9 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         var (from, to) = InclusiveDateRange(fromInclusive, toInclusive);
         await using var conn = await tenant.OpenAsync();
         var rows = await conn.QueryAsync<StockPurchaseSaleRow>(
-            @"SELECT p.stock_product_id AS StockProductId, p.name AS Name, sp.category AS Category,
+            @"SELECT MAX(p.stock_product_id) AS StockProductId,
+                     MIN(LTRIM(RTRIM(p.name))) AS Name,
+                     MAX(sp.category) AS Category,
                      SUM(p.quantity) AS TotalQuantity,
                      SUM(p.quantity * ISNULL(p.purchase_price, ISNULL(sp.purchase_price, 0))) AS TotalPurchaseAmount,
                      SUM(p.quantity * p.unit_price) AS TotalSaleAmount,
@@ -2046,18 +2159,20 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
               LEFT JOIN dbo.stock_products sp ON sp.id = p.stock_product_id
               WHERE p.shop_id = @shopId AND p.returned_at IS NULL
                 AND p.created_at >= @from AND p.created_at < @to
-              GROUP BY p.stock_product_id, p.name, sp.category
+                AND LTRIM(RTRIM(ISNULL(p.name, N''))) <> N''
+              GROUP BY LTRIM(RTRIM(p.name)) COLLATE Turkish_CI_AS
               ORDER BY Profit DESC",
             new { shopId, from, to });
         return rows.ToList();
     }
 
-    /// <summary>Bir stok kaleminin (veya isim eşleşmesiyle dışarıdan kaleminin) tek tek hareketleri.</summary>
+    /// <summary>Ürün hareketleri — isim eşleşmesi (stok + dışarıdan birlikte).</summary>
     public async Task<IReadOnlyList<StockMovementDetailRow>> GetStockMovementDetailAsync(
         Guid? stockProductId, string name, DateOnly fromInclusive, DateOnly toInclusive)
     {
         var shopId = tenant.RequireShopId();
         var (from, to) = InclusiveDateRange(fromInclusive, toInclusive);
+        var nameKey = (name ?? string.Empty).Trim();
         await using var conn = await tenant.OpenAsync();
         var rows = await conn.QueryAsync<StockMovementDetailRow>(
             @"SELECT p.created_at AS Date, v.plate AS Plate, c.full_name AS CustomerName,
@@ -2070,10 +2185,12 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
               LEFT JOIN dbo.customers sup ON sup.id = p.supplier_id
               WHERE p.shop_id = @shopId AND p.returned_at IS NULL
                 AND p.created_at >= @from AND p.created_at < @to
-                AND ((@stockProductId IS NOT NULL AND p.stock_product_id = @stockProductId)
-                     OR (@stockProductId IS NULL AND p.stock_product_id IS NULL AND p.name = @name))
+                AND (
+                      LTRIM(RTRIM(p.name)) COLLATE Turkish_CI_AS = @nameKey COLLATE Turkish_CI_AS
+                   OR (@stockProductId IS NOT NULL AND p.stock_product_id = @stockProductId)
+                )
               ORDER BY p.created_at DESC",
-            new { shopId, stockProductId, name, from, to });
+            new { shopId, stockProductId, nameKey, from, to });
         return rows.ToList();
     }
 
@@ -2168,7 +2285,11 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         return rows.ToList();
     }
 
-    /// <summary>Genel satış/ciro raporu — dönem toplamları + ödeme yöntemi dağılımı + en çok satılan hizmetler.</summary>
+    /// <summary>
+    /// Genel satış/ciro raporu.
+    /// Ciro / iskonto / açık bakiye: dönemde açılan iş emirleri (opened_at).
+    /// Tahsilat + yöntemler: dönemde alınan ödemeler (paid_at) — birbirine eşit olmalı.
+    /// </summary>
     public async Task<SalesReportDto> GetSalesReportAsync(DateOnly fromInclusive, DateOnly toInclusive)
     {
         var shopId = tenant.RequireShopId();
@@ -2178,8 +2299,9 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         var totals = await conn.QuerySingleAsync<dynamic>(
             @"SELECT COUNT(DISTINCT wo.id) AS WorkOrderCount,
                      ISNULL(SUM(t.grand_total),0) AS TotalRevenue,
-                     ISNULL(SUM(t.paid_total),0) AS TotalPaid,
-                     ISNULL(SUM(t.discount_amount),0) AS TotalDiscount
+                     ISNULL(SUM(t.discount_amount),0) AS TotalDiscount,
+                     ISNULL(SUM(CASE WHEN t.grand_total - t.paid_total > 0.005
+                                     THEN t.grand_total - t.paid_total ELSE 0 END), 0) AS TotalOutstanding
               FROM dbo.work_orders wo
               INNER JOIN dbo.vw_WorkOrderTotals t ON t.id = wo.id
               WHERE wo.shop_id=@shopId AND wo.opened_at >= @from AND wo.opened_at < @to",
@@ -2203,9 +2325,18 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
               ORDER BY SUM(s.price) DESC",
             new { shopId, from, to })).ToList();
 
+        decimal nakit = (decimal)methods.Nakit;
+        decimal kart = (decimal)methods.Kart;
+        decimal havale = (decimal)methods.Havale;
+        decimal diger = (decimal)methods.Diger;
+
         return new SalesReportDto(
-            (int)totals.WorkOrderCount, (decimal)totals.TotalRevenue, (decimal)totals.TotalPaid, (decimal)totals.TotalDiscount,
-            (decimal)methods.Nakit, (decimal)methods.Kart, (decimal)methods.Havale, (decimal)methods.Diger,
+            (int)totals.WorkOrderCount,
+            (decimal)totals.TotalRevenue,
+            nakit + kart + havale + diger,
+            (decimal)totals.TotalDiscount,
+            (decimal)totals.TotalOutstanding,
+            nakit, kart, havale, diger,
             topServices);
     }
 

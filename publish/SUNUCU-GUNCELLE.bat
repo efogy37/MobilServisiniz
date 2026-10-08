@@ -164,9 +164,9 @@ if exist "%BASE_DIR%\iis-setup\Restart-OtoServis.ps1" (
 echo.
 echo ============================================
 echo  Guncelleme tamam!
-echo  API:      https://api.mobilservisiniz.com/swagger   (eski: http://37.148.211.243:5280/swagger)
-echo  Admin:    https://panel.mobilservisiniz.com          (eski: http://37.148.211.243:5281)
-echo  Platform: https://yonetim.mobilservisiniz.com        (eski: http://37.148.211.243:5282)
+echo  API:      https://api.mobilservisiniz.com/swagger   (eski: http://31.57.33.85:5280/swagger)
+echo  Admin:    https://panel.mobilservisiniz.com          (eski: http://31.57.33.85:5281)
+echo  Platform: https://yonetim.mobilservisiniz.com        (eski: http://31.57.33.85:5282)
 echo ============================================
 pause
 exit /b 0

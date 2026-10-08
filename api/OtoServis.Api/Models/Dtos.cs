@@ -197,6 +197,18 @@ public record CreateVehicleRequest(
     string? Complaint = null,
     string? ComplaintCategory = null);
 
+public record UpdateVehicleRequest(
+    string Plate,
+    string Brand,
+    string Model,
+    int? ModelYear = null,
+    string? Color = null,
+    string Fuel = "diger",
+    string? ChassisNo = null,
+    string? EngineNo = null,
+    string? EngineVolume = null,
+    int? Mileage = null);
+
 public record VehicleConflictDto(
     Guid VehicleId,
     Guid CustomerId,
@@ -479,12 +491,17 @@ public record CustomerLedgerEntryDto(
 
 public record TopServiceRow(string Title, int Count, decimal TotalAmount);
 
-/// <summary>Genel satış/ciro raporu — dönem toplamları + ödeme yöntemi dağılımı + en çok satılan hizmetler.</summary>
+/// <summary>
+/// Genel satış/ciro raporu.
+/// TotalRevenue / TotalDiscount / TotalOutstanding: dönemde açılan iş emirleri.
+/// TotalPaid + Nakit/Kart/Havale/Diğer: dönemde alınan tahsilatlar (paid_at).
+/// </summary>
 public record SalesReportDto(
     int WorkOrderCount,
     decimal TotalRevenue,
     decimal TotalPaid,
     decimal TotalDiscount,
+    decimal TotalOutstanding,
     decimal Nakit,
     decimal Kart,
     decimal Havale,

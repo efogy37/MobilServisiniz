@@ -116,7 +116,7 @@
 │   Port: 5281        │                   ┌─────────────────────┐
 └─────────────────────┘                   │   Microsoft SQL     │
                                           │   Server (OtoServis)│
-                                          │   37.148.211.243    │
+                                          │   31.57.33.85    │
                                           └─────────────────────┘</div>
 
 <p>Mobil uygulama doğrudan veritabanına bağlanmaz; tüm işlemler API üzerinden yapılır. Admin paneli performans için doğrudan SQL Server'a bağlanır (Dapper). Her iki kanal da aynı veritabanını kullanır.</p>
@@ -185,7 +185,7 @@
   <tr><td>UI</td><td>NativeWind (Tailwind CSS)</td></tr>
   <tr><td>Veri</td><td>REST API (AsyncStorage ile oturum)</td></tr>
   <tr><td>Android Paket</td><td>com.otoservis.app</td></tr>
-  <tr><td>API Adresi (Prod)</td><td>http://37.148.211.243:5280</td></tr>
+  <tr><td>API Adresi (Prod)</td><td>http://31.57.33.85:5280</td></tr>
 </table>
 
 <h3>Ekranlar ve Özellikler</h3>
@@ -284,7 +284,7 @@
 <h3>SQL Server</h3>
 <table>
   <tr><th>Özellik</th><th>Değer</th></tr>
-  <tr><td>Sunucu</td><td>37.148.211.243</td></tr>
+  <tr><td>Sunucu</td><td>31.57.33.85</td></tr>
   <tr><td>Veritabanı</td><td>OtoServis</td></tr>
   <tr><td>Collation</td><td>Turkish_CI_AS</td></tr>
   <tr><td>Scriptler</td><td>mobile/db/sqlserver/</td></tr>
@@ -385,7 +385,7 @@ npx expo start
 
 <table>
   <tr><th>Bileşen</th><th>Durum</th><th>Not</th></tr>
-  <tr><td>SQL Server</td><td class="ok">Aktif</td><td>37.148.211.243 — şema + demo veri yüklü</td></tr>
+  <tr><td>SQL Server</td><td class="ok">Aktif</td><td>31.57.33.85 — şema + demo veri yüklü</td></tr>
   <tr><td>REST API (sunucu)</td><td class="warn">Bekliyor</td><td>Lokal çalışıyor; sunucuya deploy edilmeli</td></tr>
   <tr><td>Admin Panel</td><td class="ok">Lokal</td><td>5281 portunda çalışır durumda</td></tr>
   <tr><td>Mobil APK</td><td class="warn">Yeniden build</td><td>Servis kodu girişi + API entegrasyonu ile rebuild gerekli</td></tr>

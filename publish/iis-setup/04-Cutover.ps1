@@ -61,7 +61,7 @@ foreach ($chk in $checks) {
 }
 
 Write-Host "`nTamamlandi. Simdi tarayicidan da test edin:" -ForegroundColor Green
-Write-Host "  http://37.148.211.243:5280/swagger  (eski, hala calismali)"
+Write-Host "  http://31.57.33.85:5280/swagger  (eski, hala calismali)"
 Write-Host "  https://api.<domaininiz>/swagger    (yeni)"
 Write-Host "  https://panel.<domaininiz>"
 Write-Host "  https://yonetim.<domaininiz>"

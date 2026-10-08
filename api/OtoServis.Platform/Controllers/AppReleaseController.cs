@@ -8,12 +8,16 @@ namespace OtoServis.Platform.Controllers;
 
 [Authorize]
 [RequirePlatformAdmin]
-public class AppReleaseController(PlatformDataService data) : Controller
+public class AppReleaseController(
+    PlatformDataService data,
+    IosOtaService ios,
+    IConfiguration config) : Controller
 {
     [HttpGet]
     public async Task<IActionResult> Index()
     {
         ViewData["Title"] = "Uygulama Sürümü";
+        ViewBag.Ios = ios.GetInfo();
         var form = await data.GetAppReleaseAsync() ?? new AppReleaseForm
         {
             LatestVersion = "1.0.19",
@@ -29,6 +33,7 @@ public class AppReleaseController(PlatformDataService data) : Controller
     public async Task<IActionResult> Index(AppReleaseForm form)
     {
         ViewData["Title"] = "Uygulama Sürümü";
+        ViewBag.Ios = ios.GetInfo();
         if (!ModelState.IsValid)
             return View(form);
 
@@ -43,5 +48,36 @@ public class AppReleaseController(PlatformDataService data) : Controller
             ModelState.AddModelError(string.Empty, ex.Message);
             return View(form);
         }
+    }
+
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    [RequestSizeLimit(250_000_000)]
+    [RequestFormLimits(MultipartBodyLengthLimit = 250_000_000)]
+    public async Task<IActionResult> UploadIos(IFormFile? ipaFile, IFormFile? plistFile, string? iosVersion)
+    {
+        if (ipaFile is null || ipaFile.Length == 0)
+        {
+            TempData["IosError"] = "IPA dosyası seçin.";
+            return RedirectToAction(nameof(Index));
+        }
+
+        try
+        {
+            var version = string.IsNullOrWhiteSpace(iosVersion) ? "1.0.32" : iosVersion.Trim();
+            await ios.SaveAsync(
+                ipaFile,
+                plistFile,
+                config["AppRelease:IosBundleId"] ?? "com.otoservis.app",
+                version,
+                config["AppRelease:IosTitle"] ?? "MobilServisiniz");
+            TempData["IosFlash"] = "IPA yayınlandı. Aşağıdaki kurulum linkini iPhone Safari'den açın.";
+        }
+        catch (Exception ex)
+        {
+            TempData["IosError"] = ex.Message;
+        }
+
+        return RedirectToAction(nameof(Index));
     }
 }

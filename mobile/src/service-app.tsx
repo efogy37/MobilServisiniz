@@ -62,6 +62,10 @@ import {
 
   loginUser,
 
+  getStoredShopName,
+
+  getStoredTenantCode,
+
   createCustomer,
 
   uploadWorkOrderImage,
@@ -75,6 +79,8 @@ import {
   deleteStockApi,
 
   createVehicleApi,
+
+  updateVehicleApi,
 
   transferVehicleApi,
 
@@ -245,6 +251,7 @@ export function ServiceApp() {
   const [busy, setBusy] = useState(false)
 
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [shopLabel, setShopLabel] = useState<string | null>(null)
   const [shopLicense, setShopLicense] = useState<ShopLicense | null>(null)
 
   const [entitlements, setEntitlements] = useState<PlanEntitlements | null>(null)
@@ -323,6 +330,7 @@ export function ServiceApp() {
       if (!active) return
       setUser(null)
       setCurrentUser(null)
+      setShopLabel(null)
       setShopLicense(null)
       setEntitlements(null)
       setVehicles([])
@@ -355,6 +363,10 @@ export function ServiceApp() {
           setUser(saved)
 
           setCurrentUser(await getCurrentUser())
+          {
+            const [name, code] = await Promise.all([getStoredShopName(), getStoredTenantCode()])
+            setShopLabel([name, code].filter(Boolean).join(' · ') || null)
+          }
           setShopLicense(getCachedLicense())
           setEntitlements(getCachedEntitlements())
           if (!getCachedEntitlements()) {
@@ -475,6 +487,10 @@ export function ServiceApp() {
       setUser(res.name)
 
       setCurrentUser(await getCurrentUser())
+      {
+        const [name, code] = await Promise.all([getStoredShopName(), getStoredTenantCode()])
+        setShopLabel([name, code].filter(Boolean).join(' · ') || null)
+      }
       setShopLicense(res.license ?? getCachedLicense())
       setEntitlements(getCachedEntitlements())
 
@@ -687,6 +703,47 @@ export function ServiceApp() {
 
     }
 
+  }
+
+
+
+  async function updateVehicle(
+    id: string,
+    data: {
+      plate: string
+      brand: string
+      model: string
+      year: string
+      color: string
+      fuel: string
+      chassis: string
+      engineNo: string
+      engineVolume: string
+      km: string
+    },
+    opts?: { ruhsatUri?: string },
+  ) {
+    const v = vehicles.find((x) => x.id === id)
+    if (!v?.workOrderId) throw new Error('Araç bulunamadı.')
+
+    setBusy(true)
+    try {
+      await updateVehicleApi(id, data)
+      if (opts?.ruhsatUri) {
+        try {
+          await uploadWorkOrderImage(v.workOrderId, opts.ruhsatUri, 'ruhsat')
+        } catch (uploadErr) {
+          reportError(uploadErr)
+        }
+      }
+      const fresh = await refreshVehicle(v.workOrderId)
+      await replaceVehicle(fresh)
+    } catch (e) {
+      reportError(e)
+      throw e
+    } finally {
+      setBusy(false)
+    }
   }
 
 
@@ -1113,9 +1170,11 @@ export function ServiceApp() {
   const shellSubtitle =
     view === 'detail' && selected
       ? `${selected.brand} ${selected.model}`
-      : view === 'supplierReport'
-        ? 'Tedarikçi bazlı alış ve iade özeti'
-        : undefined
+      : view === 'dashboard'
+        ? shopLabel || undefined
+        : view === 'supplierReport'
+          ? 'Tedarikçi bazlı alış ve iade özeti'
+          : undefined
 
   const shellOnBack =
     view === 'detail'
@@ -1275,6 +1334,7 @@ export function ServiceApp() {
             onUpdateDiscount={(amount) => updateDiscount(selected.id, amount)}
             onOpenNewVisit={(complaint) => openNewVisitForVehicle(selected.id, complaint)}
             onDeleteWaiting={() => deleteWaitingVehicle(selected.id)}
+            onUpdateVehicle={(data, opts) => updateVehicle(selected.id, data, opts)}
           />
         )}
 

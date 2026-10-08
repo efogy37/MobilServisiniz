@@ -122,8 +122,8 @@ cd api
 
 Sunucuya kurulum ve IIS + domain kurulumu: **`api/DEPLOY.md`** ve **`publish/iis-setup/README.md`**
 
-**Sunucu:** `37.148.211.243`
-**Mobil API adresi:** `https://api.mobilservisiniz.com` (eski: `http://37.148.211.243:5280`, geçiş süresince hâlâ çalışır)
+**Sunucu:** `31.57.33.85`
+**Mobil API adresi:** `https://api.mobilservisiniz.com` (eski: `http://31.57.33.85:5280`, geçiş süresince hâlâ çalışır)
 
 ## Üretim notları
 
