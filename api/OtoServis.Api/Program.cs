@@ -12,6 +12,7 @@ builder.Services.AddScoped<TenantContext>();
 builder.Services.AddScoped<AuthService>();
 builder.Services.AddScoped<TenantService>();
 builder.Services.AddScoped<PlanEntitlementsService>();
+builder.Services.Configure<StorageOptions>(builder.Configuration.GetSection(StorageOptions.SectionName));
 builder.Services.AddScoped<DataService>();
 builder.Services.Configure<AiOptions>(builder.Configuration.GetSection("Ai"));
 builder.Services.AddSingleton<OcrScanService>();
@@ -67,6 +68,12 @@ builder.Services.AddCors(opt =>
         .AllowAnyMethod());
 });
 
+var storage = builder.Configuration.GetSection(StorageOptions.SectionName).Get<StorageOptions>()
+    ?? new StorageOptions();
+var contentRoot = builder.Environment.ContentRootPath;
+if (!string.IsNullOrWhiteSpace(storage.Wwwroot) || !string.IsNullOrWhiteSpace(storage.Root))
+    builder.WebHost.UseWebRoot(storage.ResolveWwwroot(contentRoot));
+
 var app = builder.Build();
 
 // Cloudflare/IIS arkasinda calisiyoruz: X-Forwarded-Proto/X-Forwarded-For'u okuyup
@@ -89,14 +96,27 @@ app.UseSwaggerUI();
 
 app.UseCors();
 
-Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "uploads"));
-Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "releases"));
-Directory.CreateDirectory(Path.Combine(app.Environment.ContentRootPath, "wwwroot", "apk", "ios", "mobilservisiniz"));
+var webRoot = app.Environment.WebRootPath
+    ?? Path.Combine(app.Environment.ContentRootPath, "wwwroot");
+var uploadsRoot = storage.ResolveUploads(app.Environment.ContentRootPath);
+Directory.CreateDirectory(uploadsRoot);
+Directory.CreateDirectory(Path.Combine(webRoot, "releases"));
+Directory.CreateDirectory(Path.Combine(webRoot, "apk", "ios", "mobilservisiniz"));
 var staticTypes = new Microsoft.AspNetCore.StaticFiles.FileExtensionContentTypeProvider();
 staticTypes.Mappings[".apk"] = "application/vnd.android.package-archive";
 staticTypes.Mappings[".ipa"] = "application/octet-stream";
 staticTypes.Mappings[".plist"] = "application/xml";
 app.UseStaticFiles(new StaticFileOptions { ContentTypeProvider = staticTypes });
+var defaultUploads = Path.GetFullPath(Path.Combine(webRoot, "uploads"));
+if (!string.Equals(Path.GetFullPath(uploadsRoot), defaultUploads, StringComparison.OrdinalIgnoreCase))
+{
+    app.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(uploadsRoot),
+        RequestPath = "/uploads",
+        ContentTypeProvider = staticTypes,
+    });
+}
 
 app.UseAuthentication();
 app.Use(async (ctx, next) =>

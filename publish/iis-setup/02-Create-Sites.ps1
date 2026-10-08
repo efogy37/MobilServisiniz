@@ -18,8 +18,11 @@ param(
     [string]$PfxPath,
     [string]$PfxPassword,
     [string]$CertThumbprint,
+    [string]$BaseDir = "",
     [switch]$SkipLegacyPorts
 )
+
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
 
 $ErrorActionPreference = "Stop"
 Import-Module WebAdministration
@@ -40,9 +43,9 @@ if (-not $CertThumbprint) {
 
 # --- 1) Servis tanimlari ---
 $services = @(
-    @{ Key = "Api";      Sub = "api";     Pool = "OtoServisApiPool";      Path = "C:\OtoServis\api";      LegacyPort = 5280; MaxContentLength = 130000000 },
-    @{ Key = "Admin";    Sub = "panel";   Pool = "OtoServisAdminPool";    Path = "C:\OtoServis\admin";    LegacyPort = 5281; MaxContentLength = 30000000 },
-    @{ Key = "Platform"; Sub = "yonetim"; Pool = "OtoServisPlatformPool"; Path = "C:\OtoServis\platform"; LegacyPort = 5282; MaxContentLength = 130000000 }
+    @{ Key = "Api";      Sub = "api";     Pool = "OtoServisApiPool";      Path = (Join-Path $BaseDir "api");      LegacyPort = 5280; MaxContentLength = 130000000 },
+    @{ Key = "Admin";    Sub = "panel";   Pool = "OtoServisAdminPool";    Path = (Join-Path $BaseDir "admin");    LegacyPort = 5281; MaxContentLength = 30000000 },
+    @{ Key = "Platform"; Sub = "yonetim"; Pool = "OtoServisPlatformPool"; Path = (Join-Path $BaseDir "platform"); LegacyPort = 5282; MaxContentLength = 130000000 }
 )
 
 foreach ($svc in $services) {

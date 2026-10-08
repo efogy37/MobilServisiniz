@@ -5,7 +5,8 @@
 
 param(
     [switch]$DeployOnly,
-    [switch]$SkipDeploy
+    [switch]$SkipDeploy,
+    [string]$RemoteBaseDir = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,9 +18,12 @@ $ServerUser = "administrator"
 #   $env:OTOSERVIS_SERVER_PASS = "..."
 # olarak ayarlayin (veya PowerShell profilinizde tanimlayin).
 $ServerPass = $env:OTOSERVIS_SERVER_PASS
-$RemoteApiPath = "C:\OtoServis\api"
-$RemoteAdminPath = "C:\OtoServis\admin"
-$RemotePlatformPath = "C:\OtoServis\platform"
+if (-not $RemoteBaseDir) { $RemoteBaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+$RemoteApiPath = Join-Path $RemoteBaseDir "api"
+$RemoteAdminPath = Join-Path $RemoteBaseDir "admin"
+$RemotePlatformPath = Join-Path $RemoteBaseDir "platform"
+if ($RemoteBaseDir -notmatch '^([A-Za-z]):\\(.*)$') { throw "RemoteBaseDir disk harfi ile baslamali: $RemoteBaseDir" }
+$RemoteUnc = "\\$Server\$($Matches[1])`$\$($Matches[2])"
 
 function Publish-Project {
     param([string]$ProjectPath, [string]$Profile)
@@ -72,8 +76,8 @@ $cred = New-Object System.Management.Automation.PSCredential($ServerUser, $secPa
 $IisSetupSource = "$PublishRoot\iis-setup"
 if (Test-Path $IisSetupSource) {
     try {
-        New-Item -ItemType Directory -Force -Path "\\$Server\C$\OtoServis\iis-setup" -ErrorAction SilentlyContinue | Out-Null
-        Copy-Item "$IisSetupSource\*" -Destination "\\$Server\C$\OtoServis\iis-setup\" -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path "$RemoteUnc\iis-setup" -ErrorAction SilentlyContinue | Out-Null
+        Copy-Item "$IisSetupSource\*" -Destination "$RemoteUnc\iis-setup\" -Force -ErrorAction SilentlyContinue
     } catch {
         Write-Host "UYARI: iis-setup klasoru kopyalanamadi (SMB erisimi yok olabilir): $($_.Exception.Message)" -ForegroundColor Yellow
     }
@@ -85,9 +89,9 @@ $deployScript = @"
 `$platformPath = '$RemotePlatformPath'
 New-Item -ItemType Directory -Force -Path `$apiPath, `$adminPath, `$platformPath | Out-Null
 
-`$restartScript = 'C:\OtoServis\iis-setup\Restart-OtoServis.ps1'
+`$restartScript = Join-Path '$RemoteBaseDir' 'iis-setup\Restart-OtoServis.ps1'
 if (Test-Path `$restartScript) {
-    & `$restartScript -StopOnly
+    & `$restartScript -StopOnly -BaseDir '$RemoteBaseDir'
 } else {
     Get-Process -Name 'dotnet','OtoServis.Api','OtoServis.Admin','OtoServis.Platform' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
@@ -118,18 +122,18 @@ try {
     Compress-Archive -Path "$AdminSource\*" -DestinationPath $adminZip -Force
     Compress-Archive -Path "$PlatformSource\*" -DestinationPath $platformZip -Force
 
-    Copy-Item $apiZip -Destination "\\$Server\C$\OtoServis\otoservis-api.zip" -Force
-    Copy-Item $adminZip -Destination "\\$Server\C$\OtoServis\otoservis-admin.zip" -Force
-    Copy-Item $platformZip -Destination "\\$Server\C$\OtoServis\otoservis-platform.zip" -Force
+    Copy-Item $apiZip -Destination "$RemoteUnc\otoservis-api.zip" -Force
+    Copy-Item $adminZip -Destination "$RemoteUnc\otoservis-admin.zip" -Force
+    Copy-Item $platformZip -Destination "$RemoteUnc\otoservis-platform.zip" -Force
 
     $startScript = @"
-Expand-Archive -Path 'C:\OtoServis\otoservis-api.zip' -DestinationPath '$RemoteApiPath' -Force
-Expand-Archive -Path 'C:\OtoServis\otoservis-admin.zip' -DestinationPath '$RemoteAdminPath' -Force
-Expand-Archive -Path 'C:\OtoServis\otoservis-platform.zip' -DestinationPath '$RemotePlatformPath' -Force
+Expand-Archive -Path (Join-Path '$RemoteBaseDir' 'otoservis-api.zip') -DestinationPath '$RemoteApiPath' -Force
+Expand-Archive -Path (Join-Path '$RemoteBaseDir' 'otoservis-admin.zip') -DestinationPath '$RemoteAdminPath' -Force
+Expand-Archive -Path (Join-Path '$RemoteBaseDir' 'otoservis-platform.zip') -DestinationPath '$RemotePlatformPath' -Force
 
-`$restartScript = 'C:\OtoServis\iis-setup\Restart-OtoServis.ps1'
+`$restartScript = Join-Path '$RemoteBaseDir' 'iis-setup\Restart-OtoServis.ps1'
 if (Test-Path `$restartScript) {
-    & `$restartScript -StartOnly
+    & `$restartScript -StartOnly -BaseDir '$RemoteBaseDir'
 } else {
     `$env:ASPNETCORE_ENVIRONMENT = 'Production'
     Start-Process -FilePath 'dotnet' -ArgumentList '$RemoteApiPath\OtoServis.Api.dll' -WorkingDirectory '$RemoteApiPath' -WindowStyle Hidden
@@ -154,9 +158,9 @@ catch {
 
 Manuel deploy adimlari:
 1. publish\api, publish\admin, publish\platform klasorlerini sunucuya kopyalayin:
-   C:\OtoServis\api
-   C:\OtoServis\admin
-   C:\OtoServis\platform
+   $RemoteApiPath
+   $RemoteAdminPath
+   $RemotePlatformPath
 
 2. Sunucuda .NET 8 Runtime yuklu olmali
 

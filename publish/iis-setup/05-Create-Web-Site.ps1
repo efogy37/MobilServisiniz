@@ -1,15 +1,22 @@
 # Mobil uygulama web sitesi: https://app.mobilservisiniz.com
-# Dosyalar once C:\OtoServis\web altina kopyalanmis olmali.
+# Dosyalar once {BaseDir}\web altina kopyalanmis olmali.
 # Yonetici PowerShell:
 #   .\05-Create-Web-Site.ps1
+#   .\05-Create-Web-Site.ps1 -BaseDir "D:\YeniKok"
+
+param(
+    [string]$BaseDir = ""
+)
 
 $ErrorActionPreference = "Stop"
 Import-Module WebAdministration
 
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+
 $hostname = "app.mobilservisiniz.com"
 $siteName = "OtoServis-Web"
 $poolName = "OtoServisWebPool"
-$path = "C:\OtoServis\web"
+$path = Join-Path $BaseDir "web"
 
 if (-not (Test-Path $path)) { throw "Klasor yok: $path  Once publish\web icerigini buraya kopyalayin." }
 if (-not (Test-Path (Join-Path $path "index.html"))) { throw "index.html yok: $path" }

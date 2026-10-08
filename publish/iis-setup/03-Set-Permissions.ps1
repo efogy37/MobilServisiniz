@@ -9,13 +9,21 @@
 #
 # Kullanim:
 #   .\03-Set-Permissions.ps1
+#   .\03-Set-Permissions.ps1 -BaseDir "D:\YeniKok"
+
+param(
+    [string]$BaseDir = ""
+)
 
 $ErrorActionPreference = "Stop"
 
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+$apiWwwroot = Join-Path $BaseDir "api\wwwroot"
+
 $grants = @(
-    @{ Path = "C:\OtoServis\api\wwwroot\uploads";  Pool = "OtoServisApiPool" },
-    @{ Path = "C:\OtoServis\api\wwwroot\releases";  Pool = "OtoServisApiPool" },
-    @{ Path = "C:\OtoServis\api\wwwroot\releases";  Pool = "OtoServisPlatformPool" }
+    @{ Path = (Join-Path $apiWwwroot "uploads");  Pool = "OtoServisApiPool" },
+    @{ Path = (Join-Path $apiWwwroot "releases");  Pool = "OtoServisApiPool" },
+    @{ Path = (Join-Path $apiWwwroot "releases");  Pool = "OtoServisPlatformPool" }
 )
 
 foreach ($g in $grants) {

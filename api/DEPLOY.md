@@ -13,6 +13,9 @@
 
 **SQL Server:** `31.57.33.85` / `OtoServis` / `otoservis_api`
 
+**Fotoğraf klasörü:** API `appsettings.json` / `appsettings.Production.json` içinde `Storage:UploadsPath`.
+Yeni sunucuda örneğin `"UploadsPath": "D:\\\\YeniKok\\\\api\\\\wwwroot\\\\uploads"` yazın; IIS App Pool’un o klasöre yazma izni olmalı.
+
 ---
 
 ## 0. Domain + IIS ilk kurulumu (bir kez yapılır)

@@ -18,7 +18,11 @@ rem icinde parantez karakteri gecen metin cmd.exe'nin blok ayracini
 rem sasirtip ": was unexpected at this time." hatasi verdiriyordu.
 if "%OTOSERVIS_DB_PASS%"=="" set /p OTOSERVIS_DB_PASS=Veritabani parolasi - otoservis_api kullanicisi: 
 
-set BASE_DIR=C:\OtoServis
+if "%OTOSERVIS_BASE_DIR%"=="" (
+    set BASE_DIR=C:\OtoServis
+) else (
+    set BASE_DIR=%OTOSERVIS_BASE_DIR%
+)
 set API_DIR=%BASE_DIR%\api
 set ADMIN_DIR=%BASE_DIR%\admin
 set PLATFORM_DIR=%BASE_DIR%\platform

@@ -18,9 +18,28 @@ public class IosOtaService(IConfiguration config)
 {
     public const string DefaultSlug = "mobilservisiniz";
 
-    public string StorageDir =>
-        config["AppRelease:IosStoragePath"]
-        ?? @"C:\OtoServis\api\wwwroot\apk\ios\mobilservisiniz";
+    public string StorageDir
+    {
+        get
+        {
+            var www = config["Storage:Wwwroot"];
+            if (string.IsNullOrWhiteSpace(www))
+            {
+                var root = config["Storage:Root"];
+                if (!string.IsNullOrWhiteSpace(root))
+                    www = Path.Combine(root.TrimEnd('\\', '/'), "api", "wwwroot");
+            }
+
+            if (!string.IsNullOrWhiteSpace(www))
+                return Path.Combine(www, "apk", "ios", DefaultSlug);
+
+            var explicitPath = config["AppRelease:IosStoragePath"];
+            if (!string.IsNullOrWhiteSpace(explicitPath))
+                return explicitPath;
+
+            return @"C:\OtoServis\api\wwwroot\apk\ios\mobilservisiniz";
+        }
+    }
 
     public string PublicBaseUrl =>
         (config["AppRelease:IosPublicBaseUrl"]

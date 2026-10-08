@@ -27,5 +27,10 @@
       "Microsoft.AspNetCore": "Warning"
     }
   },
+  "Storage": {
+    "UploadsPath": "C:\\OtoServis\\api\\wwwroot\\uploads",
+    "Wwwroot": "C:\\OtoServis\\api\\wwwroot",
+    "Root": "C:\\OtoServis"
+  },
   "AllowedHosts": "*"
 }

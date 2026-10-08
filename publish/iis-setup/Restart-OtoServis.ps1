@@ -10,14 +10,17 @@
 
 param(
     [switch]$StopOnly,
-    [switch]$StartOnly
+    [switch]$StartOnly,
+    [string]$BaseDir = ""
 )
+
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
 
 $pools = @("OtoServisApiPool", "OtoServisAdminPool", "OtoServisPlatformPool")
 $legacy = @(
-    @{ Name = "OtoServis.Api";      Port = 5280; Path = "C:\OtoServis\api\OtoServis.Api.dll" },
-    @{ Name = "OtoServis.Admin";    Port = 5281; Path = "C:\OtoServis\admin\OtoServis.Admin.dll" },
-    @{ Name = "OtoServis.Platform"; Port = 5282; Path = "C:\OtoServis\platform\OtoServis.Platform.dll" }
+    @{ Name = "OtoServis.Api";      Port = 5280; Path = (Join-Path $BaseDir "api\OtoServis.Api.dll") },
+    @{ Name = "OtoServis.Admin";    Port = 5281; Path = (Join-Path $BaseDir "admin\OtoServis.Admin.dll") },
+    @{ Name = "OtoServis.Platform"; Port = 5282; Path = (Join-Path $BaseDir "platform\OtoServis.Platform.dll") }
 )
 
 Import-Module WebAdministration -ErrorAction SilentlyContinue

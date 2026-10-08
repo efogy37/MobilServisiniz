@@ -1,11 +1,16 @@
 using Dapper;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Options;
 using OtoServis.Api.Models;
 
 namespace OtoServis.Api.Services;
 
-public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEntitlementsService plans)
+public class DataService(
+    TenantService tenant,
+    IWebHostEnvironment env,
+    PlanEntitlementsService plans,
+    IOptions<StorageOptions> storageOptions)
 {
     private static readonly string[] AllowedImageTypes = ["ruhsat", "arac", "hasar", "diger"];
     private const long MaxImageBytes = 5 * 1024 * 1024;
@@ -27,6 +32,24 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         ["havale"] = "Havale",
         ["diger"] = "Diğer",
     };
+
+    private string UploadsRoot =>
+        storageOptions.Value.ResolveUploads(env.ContentRootPath);
+
+    private string PhysicalFromRelative(string relPath)
+    {
+        var normalized = relPath.Replace('/', Path.DirectorySeparatorChar)
+            .TrimStart(Path.DirectorySeparatorChar);
+        const string prefix = "uploads";
+        if (normalized.StartsWith(prefix + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || normalized.Equals(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            normalized = normalized.Length <= prefix.Length
+                ? ""
+                : normalized[(prefix.Length + 1)..];
+        }
+        return Path.Combine(UploadsRoot, normalized);
+    }
 
     private sealed record WoContext(Guid CustomerId, Guid VehicleId, string Plate);
 
@@ -1415,8 +1438,7 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
             {
                 try
                 {
-                    var absPath = Path.Combine(env.ContentRootPath, "wwwroot",
-                        relPath.Replace('/', Path.DirectorySeparatorChar));
+                    var absPath = PhysicalFromRelative(relPath);
                     if (File.Exists(absPath)) File.Delete(absPath);
                 }
                 catch
@@ -2364,7 +2386,7 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         var id = Guid.NewGuid();
 
         var relDir = $"uploads/{shopId}/{woId}";
-        var absDir = Path.Combine(env.ContentRootPath, "wwwroot", "uploads", shopId.ToString(), woId.ToString());
+        var absDir = Path.Combine(UploadsRoot, shopId.ToString(), woId.ToString());
         Directory.CreateDirectory(absDir);
         var fileName = $"{id}{ext}";
         var absPath = Path.Combine(absDir, fileName);
@@ -2419,8 +2441,7 @@ public class DataService(TenantService tenant, IWebHostEnvironment env, PlanEnti
         {
             try
             {
-                var absPath = Path.Combine(env.ContentRootPath, "wwwroot",
-                    relPath.Replace('/', Path.DirectorySeparatorChar));
+                var absPath = PhysicalFromRelative(relPath);
                 if (File.Exists(absPath)) File.Delete(absPath);
             }
             catch

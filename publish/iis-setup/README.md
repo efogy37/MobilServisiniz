@@ -10,8 +10,9 @@ domain + IIS'e taşımak için sırayla çalıştırılır. Detaylı plan: proje
    kayıtları + SSL modu + Origin CA sertifikası oluşturma. Bu adım dashboard üzerinden yapılır,
    script yok. Sonunda elinizde `cf-origin.pfx` + parola olacak.
 
-2. **RDP ile sunucuya bağlanın**, `cf-origin.pfx` dosyasını `C:\OtoServis\cf-origin.pfx` olarak
-   kopyalayın, bu klasörün tamamını (`publish\iis-setup\*`) `C:\OtoServis\iis-setup\` altına kopyalayın.
+2. **RDP ile sunucuya bağlanın**, `cf-origin.pfx` dosyasını kurulum köküne (varsayılan
+   `C:\OtoServis`, yeni sunucuda `-BaseDir` / `OTOSERVIS_BASE_DIR`) kopyalayın; bu klasörün
+   tamamını (`publish\iis-setup\*`) `{kök}\iis-setup\` altına koyun.
 
 3. **01-Install-HostingBundle.ps1** — Yönetici PowerShell'de çalıştırın. IIS rolünü, .NET 8
    ASP.NET Core Hosting Bundle'ı ve URL Rewrite modülünü kurar.

@@ -1,12 +1,18 @@
 # Sunucuda calistirin (RDP ile 31.57.33.85)
-# Once OtoServis-Api.zip ve OtoServis-Admin.zip dosyalarini C:\OtoServis\ altina kopyalayin
+# Once zip dosyalarini BaseDir altina kopyalayin (varsayilan C:\OtoServis)
+
+param(
+    [string]$BaseDir = ""
+)
 
 $ErrorActionPreference = "Stop"
 
-$apiPath = "C:\OtoServis\api"
-$adminPath = "C:\OtoServis\admin"
-$zipApi = "C:\OtoServis\OtoServis-Api.zip"
-$zipAdmin = "C:\OtoServis\OtoServis-Admin.zip"
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+
+$apiPath = Join-Path $BaseDir "api"
+$adminPath = Join-Path $BaseDir "admin"
+$zipApi = Join-Path $BaseDir "OtoServis-Api.zip"
+$zipAdmin = Join-Path $BaseDir "OtoServis-Admin.zip"
 
 Write-Host "OtoServis sunucu kurulumu..." -ForegroundColor Cyan
 
