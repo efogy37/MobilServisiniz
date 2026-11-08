@@ -193,7 +193,8 @@ public class PlatformDataService(DbFactory db)
     {
         await using var conn = await db.OpenAsync();
         var rows = await conn.QueryAsync<ShopUserRow>(
-            @"SELECT u.id AS UserId, su.id AS MembershipId, u.full_name AS FullName, u.phone AS Phone,
+            @"SELECT u.id AS UserId, su.id AS MembershipId, u.full_name AS FullName,
+                     u.username AS Username, u.phone AS Phone,
                      su.role AS Role, su.title AS Title,
                      CAST(su.is_owner AS bit) AS IsOwner, CAST(su.is_active AS bit) AS IsActive,
                      su.joined_at AS JoinedAt
@@ -222,6 +223,10 @@ public class PlatformDataService(DbFactory db)
         if (role is not ("admin" or "usta" or "personel"))
             throw new InvalidOperationException("Geçersiz rol.");
 
+        var username = NormalizeUsername(form.Username)
+                       ?? MakeUsername(form.FullName, phone);
+        await EnsureUsernameAvailableAsync(conn, tx, username, excludeUserId: null);
+
         var existing = await conn.QuerySingleOrDefaultAsync<dynamic>(
             "SELECT id, CAST(is_active AS bit) AS IsActive FROM dbo.users WHERE phone=@phone",
             new { phone }, tx);
@@ -236,7 +241,7 @@ public class PlatformDataService(DbFactory db)
                 new
                 {
                     userId,
-                    username = MakeUsername(form.FullName, phone),
+                    username,
                     form.FullName,
                     phone,
                     hash = PasswordHasher.Hash(form.Password),
@@ -330,6 +335,87 @@ public class PlatformDataService(DbFactory db)
             "UPDATE dbo.users SET password_hash=@hash, updated_at=SYSUTCDATETIME() WHERE id=@userId",
             new { userId, hash = PasswordHasher.Hash(newPassword) });
         if (n == 0) throw new InvalidOperationException("Kullanıcı bulunamadı.");
+    }
+
+    public async Task UpdateUserAsync(Guid shopId, EditUserForm form)
+    {
+        await using var conn = await db.OpenAsync();
+        await using var tx = await conn.BeginTransactionAsync();
+
+        var membership = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            @"SELECT id, CAST(is_owner AS bit) AS IsOwner
+              FROM dbo.shop_users
+              WHERE shop_id = @shopId AND user_id = @UserId",
+            new { shopId, form.UserId }, tx);
+        if (membership is null)
+            throw new InvalidOperationException("Üyelik bulunamadı.");
+
+        var fullName = (form.FullName ?? "").Trim();
+        if (fullName.Length < 2)
+            throw new InvalidOperationException("Ad soyad en az 2 karakter olmalı.");
+
+        var phone = (form.Phone ?? "").Trim();
+        if (phone.Length < 7)
+            throw new InvalidOperationException("Telefon geçersiz.");
+
+        var username = NormalizeUsername(form.Username)
+                       ?? throw new InvalidOperationException("Kullanıcı adı en az 3 karakter olmalı.");
+        await EnsureUsernameAvailableAsync(conn, tx, username, form.UserId);
+
+        var phoneTaken = await conn.ExecuteScalarAsync<int>(
+            @"SELECT COUNT(1) FROM dbo.users
+              WHERE phone = @phone AND id <> @UserId",
+            new { phone, form.UserId }, tx);
+        if (phoneTaken > 0)
+            throw new InvalidOperationException("Bu telefon başka bir kullanıcıda kayıtlı.");
+
+        var role = (form.Role ?? "").Trim().ToLowerInvariant();
+        if (role is not ("admin" or "usta" or "personel"))
+            throw new InvalidOperationException("Geçersiz rol.");
+
+        var nUser = await conn.ExecuteAsync(
+            @"UPDATE dbo.users
+              SET username = @username,
+                  full_name = @fullName,
+                  phone = @phone,
+                  updated_at = SYSUTCDATETIME()
+              WHERE id = @UserId",
+            new { form.UserId, username, fullName, phone }, tx);
+        if (nUser == 0)
+            throw new InvalidOperationException("Kullanıcı bulunamadı.");
+
+        await conn.ExecuteAsync(
+            @"UPDATE dbo.shop_users
+              SET role = @role, title = @Title
+              WHERE shop_id = @shopId AND user_id = @UserId",
+            new { shopId, form.UserId, role, form.Title }, tx);
+
+        await tx.CommitAsync();
+    }
+
+    private static async Task EnsureUsernameAvailableAsync(
+        SqlConnection conn, System.Data.Common.DbTransaction tx, string username, Guid? excludeUserId)
+    {
+        var taken = await conn.ExecuteScalarAsync<int>(
+            @"SELECT COUNT(1) FROM dbo.users
+              WHERE username IS NOT NULL
+                AND LOWER(username) = LOWER(@username)
+                AND (@excludeUserId IS NULL OR id <> @excludeUserId)",
+            new { username, excludeUserId }, tx);
+        if (taken > 0)
+            throw new InvalidOperationException("Bu kullanıcı adı kullanılıyor.");
+    }
+
+    private static string? NormalizeUsername(string? raw)
+    {
+        var u = (raw ?? "").Trim().ToLowerInvariant();
+        if (u.Length == 0) return null;
+        if (u.Length < 3 || u.Length > 50)
+            throw new InvalidOperationException("Kullanıcı adı 3–50 karakter olmalı.");
+        if (!Regex.IsMatch(u, @"^[a-z0-9._-]+$"))
+            throw new InvalidOperationException(
+                "Kullanıcı adı yalnızca harf, rakam, nokta, alt çizgi ve tire içerebilir.");
+        return u;
     }
 
     public async Task<ShopUsageStats> GetShopUsageStatsAsync(Guid shopId)

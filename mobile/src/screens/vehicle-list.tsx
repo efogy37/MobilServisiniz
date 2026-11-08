@@ -1,5 +1,13 @@
-import { useMemo, useState } from 'react'
-import { Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
+import { useDeferredValue, useMemo, useState } from 'react'
+import {
+  FlatList,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from 'react-native'
 import { Search, Plus, CarFront } from 'lucide-react-native'
 import { cn } from '@/lib/utils'
 import { STATUS_LABELS, type JobStatus, type Vehicle } from '@/lib/types'
@@ -7,6 +15,9 @@ import { VehicleCard } from '@/components/vehicle-card'
 import { colors, withAlpha } from '@/lib/theme'
 
 export type VehicleListFilter = 'all' | JobStatus
+
+/** Boş aramada ekranda tutulan maksimum satır (sanal liste + bu limit). */
+const EMPTY_QUERY_LIMIT = 80
 
 const filters: { key: VehicleListFilter; label: string }[] = [
   { key: 'all', label: 'Tümü' },
@@ -16,6 +27,15 @@ const filters: { key: VehicleListFilter; label: string }[] = [
   { key: 'odeme_tamamlandi', label: STATUS_LABELS.odeme_tamamlandi },
   { key: 'teslim_edildi', label: STATUS_LABELS.teslim_edildi },
 ]
+
+function matchesVehicleQuery(v: Vehicle, q: string) {
+  if (!q) return true
+  if (v.plate.toLocaleLowerCase('tr').includes(q)) return true
+  if (v.brand.toLocaleLowerCase('tr').includes(q)) return true
+  if (v.model.toLocaleLowerCase('tr').includes(q)) return true
+  if (v.customer.name.toLocaleLowerCase('tr').includes(q)) return true
+  return false
+}
 
 export function VehicleList({
   vehicles,
@@ -34,19 +54,22 @@ export function VehicleList({
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<VehicleListFilter>(initialFilter)
   const [refreshing, setRefreshing] = useState(false)
+  const deferredQuery = useDeferredValue(query)
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase('tr')
-    return vehicles.filter((v) => {
+  const { rows, totalMatched, capped } = useMemo(() => {
+    const q = deferredQuery.trim().toLocaleLowerCase('tr')
+    const matched = vehicles.filter((v) => {
       const matchStatus = filter === 'all' || v.status === filter
-      const matchQuery =
-        !q ||
-        `${v.plate} ${v.brand} ${v.model} ${v.customer.name}`
-          .toLocaleLowerCase('tr')
-          .includes(q)
-      return matchStatus && matchQuery
+      return matchStatus && matchesVehicleQuery(v, q)
     })
-  }, [vehicles, query, filter])
+    const shouldCap = !q
+    const rows = shouldCap ? matched.slice(0, EMPTY_QUERY_LIMIT) : matched
+    return {
+      rows,
+      totalMatched: matched.length,
+      capped: shouldCap && matched.length > EMPTY_QUERY_LIMIT,
+    }
+  }, [vehicles, deferredQuery, filter])
 
   return (
     <View className="flex-1">
@@ -59,6 +82,8 @@ export function VehicleList({
             placeholder="Plaka, marka veya müşteri ara"
             placeholderTextColor={withAlpha(colors.mutedForeground, 0.6)}
             className="h-14 flex-1 text-base font-medium text-foreground"
+            autoCorrect={false}
+            autoCapitalize="characters"
           />
         </View>
 
@@ -67,6 +92,7 @@ export function VehicleList({
           showsHorizontalScrollIndicator={false}
           className="mt-3"
           contentContainerStyle={{ gap: 8, paddingBottom: 4 }}
+          keyboardShouldPersistTaps="handled"
         >
           {filters.map((f) => (
             <Pressable
@@ -92,10 +118,24 @@ export function VehicleList({
         </ScrollView>
       </View>
 
-      <ScrollView
+      <FlatList
         className="flex-1"
-        contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24 }}
+        data={rows}
+        keyExtractor={(v) => v.id}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        removeClippedSubviews
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 8,
+          paddingBottom: 24,
+          flexGrow: 1,
+        }}
+        ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -110,16 +150,13 @@ export function VehicleList({
             }}
           />
         }
-      >
-        {filtered.length === 0 ? (
+        ListEmptyComponent={
           <View className="mt-16 items-center">
             <View className="h-16 w-16 items-center justify-center rounded-2xl bg-secondary">
               <CarFront size={32} color={colors.mutedForeground} />
             </View>
-            <Text className="mt-4 text-base font-bold text-foreground">
-              Araç bulunamadı
-            </Text>
-            <Text className="mt-1 text-sm text-muted-foreground">
+            <Text className="mt-4 text-base font-bold text-foreground">Araç bulunamadı</Text>
+            <Text className="mt-1 text-center text-sm text-muted-foreground">
               Aramanı değiştir veya yeni bir kayıt oluştur.
             </Text>
             <Pressable
@@ -127,23 +164,30 @@ export function VehicleList({
               className="mt-5 flex-row items-center gap-2 rounded-xl bg-accent px-5 py-3"
             >
               <Plus size={20} color={colors.accentForeground} />
-              <Text className="text-sm font-bold text-accent-foreground">
-                Yeni Araç Kaydı
-              </Text>
+              <Text className="text-sm font-bold text-accent-foreground">Yeni Araç Kaydı</Text>
             </Pressable>
           </View>
-        ) : (
-          <View className="flex flex-col gap-3">
-            {filtered.map((v) => (
-              <VehicleCard
-                key={v.id}
-                vehicle={v}
-                onPress={() => onOpenVehicle(v.id)}
-              />
-            ))}
-          </View>
+        }
+        ListHeaderComponent={
+          totalMatched > 0 ? (
+            <Text className="mb-3 text-xs font-semibold text-muted-foreground">
+              {capped
+                ? `Son ${rows.length} kayıt · ${totalMatched} araç — daha fazlası için arayın`
+                : `${totalMatched} araç`}
+            </Text>
+          ) : null
+        }
+        ListFooterComponent={
+          capped ? (
+            <Text className="mt-4 text-center text-xs text-muted-foreground">
+              Tüm listeyi görmek için plaka, marka veya müşteri adı yazın.
+            </Text>
+          ) : null
+        }
+        renderItem={({ item }) => (
+          <VehicleCard vehicle={item} onPress={() => onOpenVehicle(item.id)} />
         )}
-      </ScrollView>
+      />
     </View>
   )
 }

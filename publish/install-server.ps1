@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\inetpub\wwwroot\mobilservisiniz" } }
 
 $apiPath = Join-Path $BaseDir "api"
 $adminPath = Join-Path $BaseDir "admin"

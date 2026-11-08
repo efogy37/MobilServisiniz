@@ -14,7 +14,7 @@ public class IosOtaInfo
     public DateTime? PlistUpdatedAt { get; set; }
 }
 
-public class IosOtaService(IConfiguration config)
+public class IosOtaService(IConfiguration config, IWebHostEnvironment env)
 {
     public const string DefaultSlug = "mobilservisiniz";
 
@@ -22,22 +22,11 @@ public class IosOtaService(IConfiguration config)
     {
         get
         {
-            var www = config["Storage:Wwwroot"];
-            if (string.IsNullOrWhiteSpace(www))
-            {
-                var root = config["Storage:Root"];
-                if (!string.IsNullOrWhiteSpace(root))
-                    www = Path.Combine(root.TrimEnd('\\', '/'), "api", "wwwroot");
-            }
-
-            if (!string.IsNullOrWhiteSpace(www))
-                return Path.Combine(www, "apk", "ios", DefaultSlug);
-
-            var explicitPath = config["AppRelease:IosStoragePath"];
-            if (!string.IsNullOrWhiteSpace(explicitPath))
-                return explicitPath;
-
-            return @"C:\OtoServis\api\wwwroot\apk\ios\mobilservisiniz";
+            var root = config["Storage:Root"];
+            var www = !string.IsNullOrWhiteSpace(root)
+                ? Path.Combine(root.TrimEnd('\\', '/'), "api", "wwwroot")
+                : Path.GetFullPath(Path.Combine(env.ContentRootPath, "..", "api", "wwwroot"));
+            return Path.Combine(www, "apk", "ios", DefaultSlug);
         }
     }
 

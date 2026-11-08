@@ -12,6 +12,9 @@ html = html.replace(
 html = html.replace('<html lang="en">', '<html lang="tr">')
 
 const tags = `
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <meta name="theme-color" content="#2f4a86" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
@@ -44,6 +47,11 @@ const tags = `
 
 if (!html.includes('manifest.webmanifest')) {
   html = html.replace('</head>', `${tags}\n  </head>`)
+} else if (!html.includes('http-equiv="Cache-Control"')) {
+  html = html.replace(
+    '<meta name="theme-color"',
+    '<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />\n    <meta http-equiv="Pragma" content="no-cache" />\n    <meta http-equiv="Expires" content="0" />\n    <meta name="theme-color"',
+  )
 }
 
 fs.writeFileSync(file, html)

@@ -1,5 +1,12 @@
-import { useMemo, useState } from 'react'
-import { Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native'
+import { useDeferredValue, useMemo, useState } from 'react'
+import {
+  FlatList,
+  Pressable,
+  RefreshControl,
+  Text,
+  TextInput,
+  View,
+} from 'react-native'
 import { KeyboardAwareScrollView } from '@/components/keyboard-aware-scroll'
 import { Search, Plus, Phone, MapPin, Users, ArrowLeft, Pencil, Truck, BarChart3 } from 'lucide-react-native'
 import type { Customer } from '@/lib/types'
@@ -10,6 +17,8 @@ import { cardShadow } from '@/components/vehicle-card'
 import { cn } from '@/lib/utils'
 
 type ContactFilter = 'all' | 'customers' | 'suppliers'
+
+const EMPTY_QUERY_LIMIT = 80
 
 const FILTER_OPTIONS: { key: ContactFilter; label: string }[] = [
   { key: 'all', label: 'Tümü' },
@@ -30,7 +39,7 @@ export function Customers({
   onAdd: (c: Omit<Customer, 'id'>) => void | Promise<void>
   onUpdate: (id: string, c: Omit<Customer, 'id'>) => void | Promise<void>
   onOpenCustomer: (customer: Customer) => void
-  onOpenReport: () => void
+  onOpenReport?: () => void
   onRefresh?: () => Promise<void>
   allowSuppliers?: boolean
 }) {
@@ -38,21 +47,31 @@ export function Customers({
   const [filter, setFilter] = useState<ContactFilter>('all')
   const [editing, setEditing] = useState<Customer | 'new' | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+  const deferredQuery = useDeferredValue(query)
 
   const filterOptions = allowSuppliers
     ? FILTER_OPTIONS
     : FILTER_OPTIONS.filter((o) => o.key !== 'suppliers')
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLocaleLowerCase('tr')
-    return customers.filter((c) => {
+  const { rows, totalMatched, capped } = useMemo(() => {
+    const q = deferredQuery.trim().toLocaleLowerCase('tr')
+    const matched = customers.filter((c) => {
       if (!allowSuppliers && c.isSupplier && c.isCustomer === false) return false
       if (filter === 'suppliers' && !c.isSupplier) return false
       if (filter === 'customers' && c.isCustomer === false) return false
       if (!q) return true
-      return `${c.name} ${c.phone} ${c.address ?? ''}`.toLocaleLowerCase('tr').includes(q)
+      if (c.name.toLocaleLowerCase('tr').includes(q)) return true
+      if (c.phone.toLocaleLowerCase('tr').includes(q)) return true
+      if ((c.address ?? '').toLocaleLowerCase('tr').includes(q)) return true
+      return false
     })
-  }, [customers, query, filter, allowSuppliers])
+    const shouldCap = !q
+    return {
+      rows: shouldCap ? matched.slice(0, EMPTY_QUERY_LIMIT) : matched,
+      totalMatched: matched.length,
+      capped: shouldCap && matched.length > EMPTY_QUERY_LIMIT,
+    }
+  }, [customers, deferredQuery, filter, allowSuppliers])
 
   if (editing) {
     return (
@@ -76,7 +95,7 @@ export function Customers({
           <Text className="text-sm text-muted-foreground">
             Toplam {customers.length} müşteri kayıtlı
           </Text>
-          {allowSuppliers ? (
+          {allowSuppliers && onOpenReport ? (
             <Pressable
               onPress={onOpenReport}
               className="h-11 w-11 items-center justify-center rounded-xl bg-secondary"
@@ -136,10 +155,24 @@ export function Customers({
         </Pressable>
       </View>
 
-      <ScrollView
+      <FlatList
         className="flex-1"
-        contentContainerStyle={{ paddingHorizontal: 20, paddingTop: 8, paddingBottom: 24 }}
+        data={rows}
+        keyExtractor={(c) => c.id}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        removeClippedSubviews
+        contentContainerStyle={{
+          paddingHorizontal: 20,
+          paddingTop: 8,
+          paddingBottom: 24,
+          flexGrow: 1,
+        }}
+        ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -154,101 +187,108 @@ export function Customers({
             }}
           />
         }
-      >
-        {filtered.length === 0 ? (
+        ListHeaderComponent={
+          totalMatched > 0 ? (
+            <Text className="mb-3 text-xs font-semibold text-muted-foreground">
+              {capped
+                ? `İlk ${rows.length} kayıt · ${totalMatched} cari — daha fazlası için arayın`
+                : `${totalMatched} cari`}
+            </Text>
+          ) : null
+        }
+        ListFooterComponent={
+          capped ? (
+            <Text className="mt-4 text-center text-xs text-muted-foreground">
+              Tüm listeyi görmek için isim veya telefon yazın.
+            </Text>
+          ) : null
+        }
+        ListEmptyComponent={
           <View className="mt-16 items-center">
             <View className="h-16 w-16 items-center justify-center rounded-2xl bg-secondary">
               <Users size={32} color={colors.mutedForeground} />
             </View>
-            <Text className="mt-4 text-base font-bold text-foreground">
-              Müşteri bulunamadı
-            </Text>
+            <Text className="mt-4 text-base font-bold text-foreground">Müşteri bulunamadı</Text>
             <Text className="mt-1 text-sm text-muted-foreground">
               Aramanı değiştir veya yeni bir müşteri ekle.
             </Text>
           </View>
-        ) : (
-          <View className="flex flex-col gap-3">
-            {filtered.map((c) => (
-              <Pressable
-                key={c.id}
-                onPress={() => onOpenCustomer(c)}
-                className="flex-row items-center gap-4 rounded-2xl border border-border bg-card p-4 active:bg-muted"
-                style={cardShadow}
-              >
-                <View className="h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
-                  <Text className="text-base font-extrabold text-primary">
-                    {initials(c.name)}
-                  </Text>
-                </View>
-                <View className="min-w-0 flex-1">
-                  <View className="flex-row items-center gap-1.5">
-                    <Text className="shrink text-base font-bold text-foreground" numberOfLines={1}>
-                      {c.name}
-                    </Text>
-                    {c.isSupplier ? (
-                      <View className="flex-row items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5">
-                        <Truck size={12} color={colors.accent} />
-                        <Text className="text-[11px] font-bold text-accent">Tedarikçi</Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  <View className="mt-0.5 flex-row items-center gap-1.5">
-                    <Phone size={16} color={colors.mutedForeground} />
-                    <Text className="text-sm text-muted-foreground">{c.phone}</Text>
-                  </View>
-                  {c.address ? (
-                    <View className="mt-0.5 flex-row items-center gap-1.5">
-                      <MapPin size={16} color={colors.mutedForeground} />
-                      <Text className="flex-1 text-sm text-muted-foreground" numberOfLines={1}>
-                        {c.address}
-                      </Text>
-                    </View>
-                  ) : null}
-                </View>
-                {c.isCustomer !== false || c.isSupplier ? (
-                  <View className="items-end gap-1">
-                    {c.isCustomer !== false ? (
-                      <View className="items-end">
-                        <Text className="text-[11px] font-semibold text-muted-foreground">Alacak</Text>
-                        <Text
-                          className={
-                            (c.balance ?? 0) > 0
-                              ? 'text-sm font-extrabold text-destructive'
-                              : 'text-sm font-extrabold text-foreground'
-                          }
-                        >
-                          {formatCurrency(c.balance ?? 0)}
-                        </Text>
-                      </View>
-                    ) : null}
-                    {c.isSupplier ? (
-                      <View className="items-end">
-                        <Text className="text-[11px] font-semibold text-muted-foreground">Borç</Text>
-                        <Text
-                          className={
-                            (c.supplierBalance ?? 0) > 0
-                              ? 'text-sm font-extrabold text-destructive'
-                              : 'text-sm font-extrabold text-foreground'
-                          }
-                        >
-                          {formatCurrency(c.supplierBalance ?? 0)}
-                        </Text>
-                      </View>
-                    ) : null}
+        }
+        renderItem={({ item: c }) => (
+          <Pressable
+            onPress={() => onOpenCustomer(c)}
+            className="flex-row items-center gap-4 rounded-2xl border border-border bg-card p-4 active:bg-muted"
+            style={cardShadow}
+          >
+            <View className="h-12 w-12 items-center justify-center rounded-2xl bg-primary/10">
+              <Text className="text-base font-extrabold text-primary">{initials(c.name)}</Text>
+            </View>
+            <View className="min-w-0 flex-1">
+              <View className="flex-row items-center gap-1.5">
+                <Text className="shrink text-base font-bold text-foreground" numberOfLines={1}>
+                  {c.name}
+                </Text>
+                {c.isSupplier ? (
+                  <View className="flex-row items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5">
+                    <Truck size={12} color={colors.accent} />
+                    <Text className="text-[11px] font-bold text-accent">Tedarikçi</Text>
                   </View>
                 ) : null}
-                <Pressable
-                  onPress={() => setEditing(c)}
-                  className="h-11 w-11 items-center justify-center rounded-xl bg-secondary"
-                >
-                  <Pencil size={20} color={colors.secondaryForeground} />
-                </Pressable>
-              </Pressable>
-            ))}
-          </View>
+              </View>
+              <View className="mt-0.5 flex-row items-center gap-1.5">
+                <Phone size={16} color={colors.mutedForeground} />
+                <Text className="text-sm text-muted-foreground">{c.phone}</Text>
+              </View>
+              {c.address ? (
+                <View className="mt-0.5 flex-row items-center gap-1.5">
+                  <MapPin size={16} color={colors.mutedForeground} />
+                  <Text className="flex-1 text-sm text-muted-foreground" numberOfLines={1}>
+                    {c.address}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            {c.isCustomer !== false || c.isSupplier ? (
+              <View className="items-end gap-1">
+                {c.isCustomer !== false ? (
+                  <View className="items-end">
+                    <Text className="text-[11px] font-semibold text-muted-foreground">Alacak</Text>
+                    <Text
+                      className={
+                        (c.balance ?? 0) > 0
+                          ? 'text-sm font-extrabold text-destructive'
+                          : 'text-sm font-extrabold text-foreground'
+                      }
+                    >
+                      {formatCurrency(c.balance ?? 0)}
+                    </Text>
+                  </View>
+                ) : null}
+                {c.isSupplier ? (
+                  <View className="items-end">
+                    <Text className="text-[11px] font-semibold text-muted-foreground">Borç</Text>
+                    <Text
+                      className={
+                        (c.supplierBalance ?? 0) > 0
+                          ? 'text-sm font-extrabold text-destructive'
+                          : 'text-sm font-extrabold text-foreground'
+                      }
+                    >
+                      {formatCurrency(c.supplierBalance ?? 0)}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+            <Pressable
+              onPress={() => setEditing(c)}
+              className="h-11 w-11 items-center justify-center rounded-xl bg-secondary"
+            >
+              <Pencil size={20} color={colors.secondaryForeground} />
+            </Pressable>
+          </Pressable>
         )}
-      </ScrollView>
+      />
     </View>
   )
 }

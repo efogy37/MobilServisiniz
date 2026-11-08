@@ -133,13 +133,31 @@ public record UpdateStockRequest(
 
 public record ScanInvoiceRequest(string FileBase64, string? MimeType = "application/pdf");
 
-public record InvoiceScanLineDto(string Name, int Quantity, decimal UnitPrice, decimal LineTotal);
+/// <summary>
+/// PDF'den okunan satır. UnitPrice/LineTotal: e-Fatura'da KDV DAHİL net değerler,
+/// Parçacı formatında faturadaki birim fiyat/tutar (KDV bilgisi yok).
+/// Code: faturada geçen ORİJİNAL stok kodu (firma ön ekleriyle, dokunulmamış).
+/// </summary>
+public record InvoiceScanLineDto(
+    string Name,
+    int Quantity,
+    decimal UnitPrice,
+    decimal LineTotal,
+    string? Code = null,
+    string? Brand = null,
+    decimal? NetUnitPriceExclVat = null,
+    decimal? VatRate = null,
+    string? Warning = null);
 
 public record InvoiceScanResponse(
     string? DocumentNo,
     string? DocumentDate,
     IReadOnlyList<InvoiceScanLineDto> Lines,
-    string? Provider = null);
+    string? Provider = null,
+    string? SupplierName = null,
+    decimal? GrandTotal = null,
+    string Format = "parcaci",
+    string? Warning = null);
 
 public record ImportPurchaseLineRequest(
     string Name,
@@ -147,7 +165,22 @@ public record ImportPurchaseLineRequest(
     decimal UnitPrice,
     decimal? SalePrice = null,
     string Category = "diger",
-    string? Code = null);
+    string? Code = null,
+    Guid? StockProductId = null,
+    string? ManufacturerCode = null,
+    string? Brand = null);
+
+/* ---- PDF satırı ↔ stok eşleştirme ---- */
+public record MatchLineRequest(int Index, string Name, string? RawCode = null, string? Brand = null);
+public record MatchStockLinesRequest(Guid? SupplierId, IReadOnlyList<MatchLineRequest> Lines);
+public record MatchCandidateDto(Guid StockId, string Name, string? Code, int Quantity, decimal Price, int Score, string Reason);
+/// <summary>Status: exact | multiple | suggested | none</summary>
+public record MatchLineResultDto(
+    int Index,
+    string? RawCode,
+    string? ManufacturerCode,
+    string Status,
+    IReadOnlyList<MatchCandidateDto> Candidates);
 
 public record ImportPurchaseRequest(
     Guid SupplierId,
@@ -162,7 +195,14 @@ public record ImportPurchaseResponse(
     Guid? LedgerTransactionId);
 
 public record UpdateServiceRequest(string Title, decimal Price);
-public record UpdatePartRequest(string Name, int Quantity, decimal UnitPrice, decimal? PurchasePrice = null);
+public record UpdatePartRequest(
+    string Name,
+    int Quantity,
+    decimal UnitPrice,
+    decimal? PurchasePrice = null,
+    string? Source = null,
+    Guid? SupplierId = null,
+    Guid? StockProductId = null);
 
 public record CreateVehicleResponse(Guid VehicleId, Guid WorkOrderId, VehicleDto Vehicle);
 
@@ -195,7 +235,9 @@ public record CreateVehicleRequest(
     string? EngineVolume = null,
     int? Mileage = null,
     string? Complaint = null,
-    string? ComplaintCategory = null);
+    string? ComplaintCategory = null,
+    /// <summary>Geliş/servis tarihi (Türkiye takvim günü). Boşsa şimdi.</summary>
+    DateTime? OpenedAt = null);
 
 public record UpdateVehicleRequest(
     string Plate,
@@ -246,7 +288,9 @@ public record WorkOrderDto(
     int? MileageIn,
     decimal GrandTotal,
     decimal PaidTotal,
-    DateTime OpenedAt);
+    DateTime OpenedAt,
+    /// <summary>Aynı araç için bu iş emrinin kaçıncı servis kaydı (1, 2, 3…).</summary>
+    int VisitNumber = 1);
 
 public record WorkOrderDetailDto(
     Guid Id,
@@ -265,10 +309,35 @@ public record WorkOrderDetailDto(
     string? AssignedTo,
     DateTime OpenedAt = default,
     DateTime? StartedAt = null,
-    DateTime? ClosedAt = null);
+    DateTime? ClosedAt = null,
+    /// <summary>Aynı araç için bu iş emrinin kaçıncı servis kaydı (1, 2, 3…).</summary>
+    int VisitNumber = 1);
 
 public record ComplaintDto(Guid Id, string Description, DateTime CreatedAt, string Category = "diger");
 public record ServiceLineDto(Guid Id, string Title, decimal Price);
+
+/// <summary>Müşteri detayında araç tıklanınca gösterilen servis/ürün geçmişi.</summary>
+public record VehicleServiceHistoryDto(
+    Guid VehicleId,
+    string Plate,
+    string Brand,
+    string Model,
+    IReadOnlyList<VehicleVisitHistoryDto> Visits);
+
+public record VehicleVisitHistoryDto(
+    Guid WorkOrderId,
+    long OrderNo,
+    string Status,
+    DateTime OpenedAt,
+    int VisitNumber,
+    IReadOnlyList<ServiceLineDto> Services,
+    IReadOnlyList<VehicleHistoryPartDto> Parts);
+
+public record VehicleHistoryPartDto(
+    Guid Id,
+    string Name,
+    int Quantity,
+    decimal UnitPrice);
 public record PartLineDto(
     Guid Id,
     string Name,
@@ -299,7 +368,11 @@ public record AddPartRequest(
     string Source = "stok",
     Guid? SupplierId = null,
     decimal? PurchasePrice = null,
-    bool Force = false);
+    bool Force = false,
+    string? SupplierCode = null,
+    Guid? MatchedStockProductId = null,
+    string? ManufacturerCode = null,
+    string? Brand = null);
 public record AddComplaintRequest(string Description, string? Category = null);
 public record UpdateComplaintRequest(string Description, string? Category = null);
 public record UpdateStatusRequest(string Status, Guid? AssignedUserId = null, string? AssignedUserName = null);
@@ -345,7 +418,12 @@ public record PaymentPendingItemDto(
     string Status,
     decimal GrandTotal,
     decimal PaidTotal,
-    decimal Remaining);
+    decimal Remaining,
+    int VisitNumber = 1,
+    /// <summary>Ödeme beklemeye başladığı an (servis tamamlanma / closed_at, yoksa opened_at).</summary>
+    DateTime PendingSince = default,
+    /// <summary>Türkiye takvim gününe göre kaç gündür bekliyor.</summary>
+    int DaysWaiting = 0);
 
 public record PaymentsPendingReportDto(
     int Count,
@@ -372,10 +450,17 @@ public class WorkOrderCompletedException() : Exception("Bu iş tamamlanmış.");
 public class StockInUseException()
     : Exception("Bu ürün daha önce iş emrinde kullanılmış veya alım/satım hareketi görmüş. Önce ilgili hareketleri (iş emri parçası vb.) silin, sonra stoktan silebilirsiniz.");
 
+public class StockCodeConflictException()
+    : Exception("Bu ürün kodu zaten stokta var. Aynı kodla ikinci ürün eklenemez; kodu değiştirin veya boş bırakın.");
+
 public class WorkOrderReopenBlockedException()
     : Exception("Bu iş farklı bir günde tamamlandı, durumu geri alamazsınız. Yeni bir servis kaydı açabilirsiniz.");
 
-public record OpenNewVisitRequest(string? Complaint = null, string? ComplaintCategory = null);
+public record OpenNewVisitRequest(
+    string? Complaint = null,
+    string? ComplaintCategory = null,
+    /// <summary>Geliş/servis tarihi (Türkiye takvim günü). Boşsa şimdi.</summary>
+    DateTime? OpenedAt = null);
 public record OpenNewVisitResponse(Guid VehicleId, Guid WorkOrderId);
 
 public record WorkOrderStatusHistoryDto(
@@ -425,6 +510,8 @@ public record SupplierTransactionDto(
     int? PartQuantity = null,
     decimal? PurchasePrice = null,
     string? Plate = null,
+    string? Brand = null,
+    string? Model = null,
     Guid? WorkOrderId = null,
     Guid? VehicleId = null);
 
@@ -459,13 +546,36 @@ public record StockMovementDetailRow(
     int Quantity,
     decimal UnitPrice,
     decimal? PurchasePrice,
-    string? SupplierName);
+    string? SupplierName,
+    string? PartName = null);
 
 /// <summary>Ürün bazlı alış (maliyet) / satış (ciro) / kâr özeti.</summary>
 public record StockPurchaseSaleRow(
     Guid? StockProductId,
     string Name,
     string? Category,
+    int TotalQuantity,
+    decimal TotalPurchaseAmount,
+    decimal TotalSaleAmount,
+    decimal Profit);
+
+/// <summary>Araç bazlı parça alış / satış / kâr özeti.</summary>
+public record StockPurchaseSaleVehicleRow(
+    Guid VehicleId,
+    string Plate,
+    string? CustomerName,
+    string? Brand,
+    string? Model,
+    int TotalQuantity,
+    decimal TotalPurchaseAmount,
+    decimal TotalSaleAmount,
+    decimal Profit);
+
+/// <summary>Tedarikçi / kaynak bazlı parça alış / satış / kâr özeti (stok + dışarıdan temin).</summary>
+public record StockPurchaseSaleSupplierRow(
+    Guid? SupplierId,
+    string SupplierName,
+    string Source, // "stok" | "disaridan"
     int TotalQuantity,
     decimal TotalPurchaseAmount,
     decimal TotalSaleAmount,
@@ -491,6 +601,8 @@ public record CustomerLedgerEntryDto(
 
 public record TopServiceRow(string Title, int Count, decimal TotalAmount);
 
+public record TopPartRow(string Name, int Quantity, decimal TotalAmount);
+
 /// <summary>
 /// Genel satış/ciro raporu.
 /// TotalRevenue / TotalDiscount / TotalOutstanding: dönemde açılan iş emirleri.
@@ -506,7 +618,11 @@ public record SalesReportDto(
     decimal Kart,
     decimal Havale,
     decimal Diger,
-    IReadOnlyList<TopServiceRow> TopServices);
+    IReadOnlyList<TopServiceRow> TopServices,
+    /// <summary>Dönemde en çok yapılan işçilikler (adet sırası).</summary>
+    IReadOnlyList<TopServiceRow> TopJobs,
+    /// <summary>Dönemde en çok satılan yedek parçalar (adet sırası).</summary>
+    IReadOnlyList<TopPartRow> TopParts);
 
 public class SupplierPhoneConflictException()
     : Exception("Bu telefon numarasıyla kayıtlı bir cari zaten var.");

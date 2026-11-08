@@ -6,6 +6,7 @@ import {
   Platform,
   Pressable,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -14,6 +15,27 @@ import { cn } from '@/lib/utils'
 import { colors } from '@/lib/theme'
 
 export type MainTabKey = 'dashboard' | 'vehicles' | 'customers' | 'products' | 'new'
+
+/** Web masaüstü: sol menü. Telefonda aynı uygulama alt sekmeli kalır. */
+export const DESKTOP_BREAKPOINT = 900
+
+export function useDesktopLayout() {
+  const { width } = useWindowDimensions()
+  const [inner, setInner] = useState(() =>
+    Platform.OS === 'web' && typeof window !== 'undefined' ? window.innerWidth : width,
+  )
+
+  useEffect(() => {
+    if (Platform.OS !== 'web') return
+    const sync = () => setInner(window.innerWidth)
+    sync()
+    window.addEventListener('resize', sync)
+    return () => window.removeEventListener('resize', sync)
+  }, [])
+
+  const w = Platform.OS === 'web' ? Math.max(width, inner) : width
+  return Platform.OS === 'web' && w >= DESKTOP_BREAKPOINT
+}
 
 type IconType = typeof Home
 
@@ -36,11 +58,12 @@ export function AppHeader({
   right?: ReactNode
 }) {
   const insets = useSafeAreaInsets()
+  const desktop = useDesktopLayout()
 
   return (
     <View
       className="overflow-hidden border-b border-primary-foreground/10 bg-primary px-3 pb-2.5"
-      style={{ paddingTop: insets.top + 4 }}
+      style={{ paddingTop: desktop ? 12 : insets.top + 4 }}
     >
       <View className="h-11 flex-row items-center gap-2.5">
         {onBack ? (
@@ -148,6 +171,8 @@ export function AppShell({
   activeTab,
   onNavigate,
   showStock = true,
+  shopLabel,
+  onLogout,
   children,
 }: {
   title: string
@@ -157,8 +182,11 @@ export function AppShell({
   activeTab: MainTabKey
   onNavigate: (tab: MainTabKey) => void
   showStock?: boolean
+  shopLabel?: string
+  onLogout?: () => void
   children: ReactNode
 }) {
+  const desktop = useDesktopLayout()
   const [keyboardOpen, setKeyboardOpen] = useState(false)
 
   useEffect(() => {
@@ -172,6 +200,24 @@ export function AppShell({
     }
   }, [])
 
+  if (desktop) {
+    return (
+      <View className="flex-1 flex-row bg-background" style={{ flex: 1, flexDirection: 'row' }}>
+        <DesktopSidebar
+          activeTab={activeTab}
+          onNavigate={onNavigate}
+          showStock={showStock}
+          shopLabel={shopLabel}
+          onLogout={onLogout}
+        />
+        <View className="min-w-0 flex-1" style={{ flex: 1, minWidth: 0 }}>
+          <AppHeader title={title} subtitle={subtitle} onBack={onBack} right={headerRight} />
+          <View className="flex-1">{children}</View>
+        </View>
+      </View>
+    )
+  }
+
   return (
     <KeyboardAvoidingView
       className="flex-1 bg-background"
@@ -181,11 +227,106 @@ export function AppShell({
     >
       <AppHeader title={title} subtitle={subtitle} onBack={onBack} right={headerRight} />
       <View className="flex-1">{children}</View>
-      {/* Alt menü klavyenin üstüne binmesin */}
       {keyboardOpen ? null : (
         <AppFooter activeTab={activeTab} onNavigate={onNavigate} showStock={showStock} />
       )}
     </KeyboardAvoidingView>
+  )
+}
+
+function DesktopSidebar({
+  activeTab,
+  onNavigate,
+  showStock,
+  shopLabel,
+  onLogout,
+}: {
+  activeTab: MainTabKey
+  onNavigate: (tab: MainTabKey) => void
+  showStock: boolean
+  shopLabel?: string
+  onLogout?: () => void
+}) {
+  const items = NAV_ITEMS.filter((i) => showStock || i.key !== 'products')
+
+  return (
+    <View
+      style={{
+        width: 248,
+        backgroundColor: colors.primary,
+        paddingTop: 20,
+        paddingBottom: 16,
+        paddingHorizontal: 14,
+        justifyContent: 'space-between',
+      }}
+    >
+      <View>
+        <View className="mb-6 flex-row items-center gap-3 px-1">
+          <View className="h-10 w-10 overflow-hidden rounded-xl">
+            <Image
+              source={require('../../assets/logo.png')}
+              style={{ width: 40, height: 40 }}
+              resizeMode="cover"
+            />
+          </View>
+          <View className="min-w-0 flex-1">
+            <Text className="text-sm font-extrabold text-primary-foreground" numberOfLines={1}>
+              MobilServisiniz
+            </Text>
+            {shopLabel ? (
+              <Text className="text-[11px] text-primary-foreground/70" numberOfLines={1}>
+                {shopLabel}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+
+        <Pressable
+          onPress={() => onNavigate('new')}
+          className="mb-4 flex-row items-center justify-center gap-2 rounded-xl bg-accent py-3 active:opacity-90"
+        >
+          <Plus size={18} color={colors.accentForeground} strokeWidth={2.5} />
+          <Text className="text-sm font-bold text-accent-foreground">Yeni Kayıt</Text>
+        </Pressable>
+
+        {items.map((item) => {
+          const active = activeTab === item.key
+          const Icon = item.icon
+          return (
+            <Pressable
+              key={item.key}
+              onPress={() => onNavigate(item.key)}
+              className="mb-1 flex-row items-center gap-3 rounded-xl px-3 py-2.5"
+              style={active ? { backgroundColor: 'rgba(255,255,255,0.14)' } : undefined}
+            >
+              <Icon
+                size={20}
+                color={active ? colors.primaryForeground : 'rgba(252,252,253,0.72)'}
+                strokeWidth={active ? 2.4 : 2}
+              />
+              <Text
+                className={cn(
+                  'text-sm font-semibold',
+                  active ? 'text-primary-foreground' : 'text-primary-foreground/70',
+                )}
+              >
+                {item.label}
+              </Text>
+            </Pressable>
+          )
+        })}
+      </View>
+
+      {onLogout ? (
+        <Pressable
+          onPress={onLogout}
+          className="flex-row items-center gap-3 rounded-xl px-3 py-2.5 active:opacity-80"
+        >
+          <LogOut size={18} color="rgba(252,252,253,0.72)" />
+          <Text className="text-sm font-semibold text-primary-foreground/70">Çıkış</Text>
+        </Pressable>
+      ) : null}
+    </View>
   )
 }
 

@@ -16,11 +16,9 @@
     }
   },
   "Storage": {
-    "Root": "C:\\OtoServis",
-    "Wwwroot": "C:\\OtoServis\\api\\wwwroot"
+    "Root": "C:\\inetpub\\wwwroot\\mobilservisiniz"
   },
   "AppRelease": {
-    "IosStoragePath": "",
     "IosPublicBaseUrl": "https://api.mobilservisiniz.com/apk/ios/mobilservisiniz",
     "IosBundleId": "com.otoservis.app",
     "IosTitle": "MobilServisiniz"

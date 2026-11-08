@@ -1,6 +1,8 @@
 ﻿@{
     var controller = ViewContext.RouteData.Values["controller"]?.ToString() ?? "";
     var shopName = User.Identity?.IsAuthenticated == true ? User.FindFirst("shop_name")?.Value : null;
+    var shopRole = User.Identity?.IsAuthenticated == true ? User.FindFirst("shop_role")?.Value : null;
+    var canSeeReports = shopRole == "admin" || shopRole == "usta";
 }
 <!DOCTYPE html>
 <html lang="tr">
@@ -24,7 +26,10 @@
             }
             <nav class="admin-nav py-2">
                 <a class="@(controller == "Dashboard" ? "active" : "")" asp-controller="Dashboard" asp-action="Index">📊 Dashboard</a>
-                <a class="@(controller == "Reports" ? "active" : "")" asp-controller="Reports" asp-action="Index">📈 Raporlar</a>
+                @if (canSeeReports)
+                {
+                    <a class="@(controller == "Reports" ? "active" : "")" asp-controller="Reports" asp-action="Index">📈 Raporlar</a>
+                }
                 <a class="@(controller == "Customers" ? "active" : "")" asp-controller="Customers" asp-action="Index">👥 Müşteriler</a>
                 <a class="@(controller == "Vehicles" ? "active" : "")" asp-controller="Vehicles" asp-action="Index">🚗 Araçlar</a>
                 @if (canSuppliers)

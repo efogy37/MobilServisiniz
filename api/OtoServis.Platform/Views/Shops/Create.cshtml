@@ -8,29 +8,29 @@
     <a asp-action="Index" class="small text-decoration-none">&larr; Servis listesi</a>
 </div>
 
-<div class="card border-0 shadow-sm" style="max-width:640px">
-    <div class="card-body p-4">
-        <form asp-action="Create" method="post">
+<div class="card border-0 shadow-sm create-shop-card">
+    <div class="card-body p-3 p-md-4">
+        <form asp-action="Create" method="post" class="mobile-form">
             @Html.AntiForgeryToken()
             <div asp-validation-summary="ModelOnly" class="alert alert-danger py-2 small"></div>
 
             <h2 class="h6 fw-bold text-secondary mb-3">Servis</h2>
             <div class="row g-3 mb-4">
-                <div class="col-md-4">
+                <div class="col-12 col-md-4">
                     <label asp-for="TenantCode" class="form-label"></label>
-                    <input asp-for="TenantCode" class="form-control text-uppercase" placeholder="OTO-XXX" />
+                    <input asp-for="TenantCode" class="form-control text-uppercase" placeholder="OTO-XXX" autocomplete="off" />
                     <span asp-validation-for="TenantCode" class="text-danger small"></span>
                 </div>
-                <div class="col-md-8">
+                <div class="col-12 col-md-8">
                     <label asp-for="Name" class="form-label"></label>
-                    <input asp-for="Name" class="form-control" />
+                    <input asp-for="Name" class="form-control" autocomplete="organization" />
                     <span asp-validation-for="Name" class="text-danger small"></span>
                 </div>
-                <div class="col-md-4">
+                <div class="col-12 col-md-4">
                     <label asp-for="City" class="form-label"></label>
                     <input asp-for="City" class="form-control" />
                 </div>
-                <div class="col-md-4">
+                <div class="col-12 col-md-4">
                     <label asp-for="SubscriptionPlan" class="form-label"></label>
                     <select asp-for="SubscriptionPlan" class="form-select">
                         @foreach (var p in plans)
@@ -40,11 +40,11 @@
                         }
                     </select>
                 </div>
-                <div class="col-md-4">
+                <div class="col-12 col-md-4">
                     <label asp-for="MaxUsers" class="form-label"></label>
-                    <input asp-for="MaxUsers" class="form-control" placeholder="Plan varsayılanı" />
+                    <input asp-for="MaxUsers" class="form-control" inputmode="numeric" placeholder="Plan varsayılanı" />
                 </div>
-                <div class="col-md-6">
+                <div class="col-12 col-md-6">
                     <label asp-for="LicenseType" class="form-label"></label>
                     <select asp-for="LicenseType" class="form-select">
                         @foreach (var t in LicenseHelper.Types)
@@ -57,24 +57,24 @@
 
             <h2 class="h6 fw-bold text-secondary mb-3">Sahip hesabı</h2>
             <div class="row g-3 mb-4">
-                <div class="col-md-6">
+                <div class="col-12 col-md-6">
                     <label asp-for="OwnerName" class="form-label"></label>
-                    <input asp-for="OwnerName" class="form-control" />
+                    <input asp-for="OwnerName" class="form-control" autocomplete="name" />
                     <span asp-validation-for="OwnerName" class="text-danger small"></span>
                 </div>
-                <div class="col-md-6">
+                <div class="col-12 col-md-6">
                     <label asp-for="OwnerPhone" class="form-label"></label>
-                    <input asp-for="OwnerPhone" class="form-control" />
+                    <input asp-for="OwnerPhone" class="form-control" inputmode="tel" autocomplete="tel" />
                     <span asp-validation-for="OwnerPhone" class="text-danger small"></span>
                 </div>
-                <div class="col-md-6">
+                <div class="col-12 col-md-6">
                     <label asp-for="OwnerPassword" class="form-label"></label>
-                    <input asp-for="OwnerPassword" class="form-control" />
+                    <input asp-for="OwnerPassword" class="form-control" autocomplete="new-password" />
                     <span asp-validation-for="OwnerPassword" class="text-danger small"></span>
                 </div>
             </div>
 
-            <button type="submit" class="btn text-white fw-semibold" style="background:#2f4a86">Servisi Oluştur</button>
+            <button type="submit" class="btn btn-mobile-block text-white fw-semibold" style="background:#2f4a86">Servisi Oluştur</button>
         </form>
     </div>
 </div>

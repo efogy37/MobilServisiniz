@@ -158,23 +158,33 @@ public class ReportsController(DataService data) : ControllerBase
     }
 
     [HttpGet("stock-purchase-sale")]
-    public async Task<ActionResult> StockPurchaseSale([FromQuery] DateOnly from, [FromQuery] DateOnly to)
+    public async Task<ActionResult> StockPurchaseSale(
+        [FromQuery] DateOnly from, [FromQuery] DateOnly to,
+        [FromQuery] string groupBy = "product")
     {
         if (User.GetShopRole() == "personel") return Forbid();
         try
         {
-            return Ok(await data.GetStockPurchaseSaleReportAsync(from, to));
+            var mode = (groupBy ?? "product").Trim().ToLowerInvariant();
+            return mode switch
+            {
+                "vehicle" or "arac" => Ok(await data.GetStockPurchaseSaleByVehicleAsync(from, to)),
+                "supplier" or "tedarikci" => Ok(await data.GetStockPurchaseSaleBySupplierAsync(from, to)),
+                _ => Ok(await data.GetStockPurchaseSaleReportAsync(from, to)),
+            };
         }
         catch (PlanFeatureDeniedException ex) { return ex.ToActionResult(); }
     }
 
     [HttpGet("stock-movements")]
     public async Task<ActionResult> StockMovements(
-        [FromQuery] Guid? stockProductId, [FromQuery] string name,
+        [FromQuery] Guid? stockProductId, [FromQuery] string? name,
+        [FromQuery] Guid? vehicleId, [FromQuery] Guid? supplierId, [FromQuery] string? source,
         [FromQuery] DateOnly from, [FromQuery] DateOnly to)
     {
         if (User.GetShopRole() == "personel") return Forbid();
-        return Ok(await data.GetStockMovementDetailAsync(stockProductId, name, from, to));
+        return Ok(await data.GetStockMovementDetailAsync(
+            stockProductId, name, from, to, vehicleId, supplierId, source));
     }
 
     [HttpGet("account-ledger")]
@@ -285,6 +295,13 @@ public class VehiclesController(DataService data) : ControllerBase
     public async Task<ActionResult> List([FromQuery] string? status, [FromQuery] string? search, [FromQuery] Guid? customerId)
         => Ok(await data.GetVehiclesAsync(status, search, customerId));
 
+    [HttpGet("{id:guid}/service-history")]
+    public async Task<ActionResult<VehicleServiceHistoryDto>> ServiceHistory(Guid id)
+    {
+        var history = await data.GetVehicleServiceHistoryAsync(id);
+        return history is null ? NotFound(new { error = "Araç bulunamadı." }) : Ok(history);
+    }
+
     [HttpPost]
     public async Task<ActionResult<CreateVehicleResponse>> Create([FromBody] CreateVehicleRequest req)
     {
@@ -296,6 +313,10 @@ public class VehiclesController(DataService data) : ControllerBase
         catch (VehiclePlateConflictException ex)
         {
             return Conflict(ex.Conflict);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (PlanLimitExceededException ex) { return ex.ToActionResult(); }
         catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number is 2601 or 2627)
@@ -344,8 +365,12 @@ public class VehiclesController(DataService data) : ControllerBase
         try
         {
             var result = await data.OpenNewVisitAsync(
-                id, User.GetUserId(), req.Complaint, req.ComplaintCategory);
+                id, User.GetUserId(), req.Complaint, req.ComplaintCategory, req.OpenedAt);
             return result is null ? NotFound(new { error = "Araç bulunamadı." }) : Ok(result);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
         }
         catch (PlanLimitExceededException ex) { return ex.ToActionResult(); }
     }
@@ -382,6 +407,7 @@ public class StockController(DataService data) : ControllerBase
             return created is null ? BadRequest() : Ok(created);
         }
         catch (PlanFeatureDeniedException ex) { return ex.ToActionResult(); }
+        catch (StockCodeConflictException ex) { return Conflict(new { error = ex.Message }); }
     }
 
     [HttpPut("{id:guid}")]
@@ -393,6 +419,7 @@ public class StockController(DataService data) : ControllerBase
             return updated is null ? NotFound() : Ok(updated);
         }
         catch (PlanFeatureDeniedException ex) { return ex.ToActionResult(); }
+        catch (StockCodeConflictException ex) { return Conflict(new { error = ex.Message }); }
     }
 
     [HttpDelete("{id:guid}")]
@@ -408,6 +435,13 @@ public class StockController(DataService data) : ControllerBase
         {
             return Conflict(new { error = ex.Message });
         }
+    }
+
+    [HttpPost("match-lines")]
+    public async Task<ActionResult<IReadOnlyList<MatchLineResultDto>>> MatchLines([FromBody] MatchStockLinesRequest req)
+    {
+        try { return Ok(await data.MatchStockLinesAsync(req)); }
+        catch (PlanFeatureDeniedException ex) { return ex.ToActionResult(); }
     }
 
     [HttpPost("import-purchase")]
@@ -507,6 +541,7 @@ public class WorkOrdersController(DataService data) : ControllerBase
     }
 
     [HttpPut("{id:guid}/payments/{paymentId:guid}")]
+    [HttpPost("{id:guid}/payments/{paymentId:guid}")]
     public async Task<ActionResult<WorkOrderPaymentResultDto>> UpdatePayment(
         Guid id, Guid paymentId, [FromBody] UpdateWorkOrderPaymentRequest req)
     {
@@ -522,6 +557,7 @@ public class WorkOrdersController(DataService data) : ControllerBase
     }
 
     [HttpDelete("{id:guid}/payments/{paymentId:guid}")]
+    [HttpPost("{id:guid}/payments/{paymentId:guid}/delete")]
     public async Task<ActionResult<WorkOrderPaymentResultDto>> DeletePayment(Guid id, Guid paymentId)
     {
         var result = await data.DeleteWorkOrderPaymentAsync(id, paymentId, User.GetUserId());
@@ -529,6 +565,7 @@ public class WorkOrdersController(DataService data) : ControllerBase
     }
 
     [HttpPut("{id:guid}/discount")]
+    [HttpPost("{id:guid}/discount")]
     public async Task<ActionResult<WorkOrderPaymentResultDto>> UpdateDiscount(
         Guid id, [FromBody] UpdateWorkOrderDiscountRequest req)
     {
@@ -640,6 +677,10 @@ public class WorkOrdersController(DataService data) : ControllerBase
         {
             return StatusCode(500, new { error = "Fotoğraf kaydedilemedi: " + ex.Message });
         }
+        catch (UnauthorizedAccessException)
+        {
+            return StatusCode(500, new { error = "Fotoğraf klasörüne yazılamadı. IIS App Pool'a uploads yazma izni verin." });
+        }
     }
 
     [HttpGet("{id:guid}/images")]
@@ -671,6 +712,7 @@ public class WorkOrdersController(DataService data) : ControllerBase
     }
 
     [HttpPatch("{id:guid}/parts/{partId:guid}")]
+    [HttpPost("{id:guid}/parts/{partId:guid}")]
     public async Task<ActionResult> UpdatePart(Guid id, Guid partId, [FromBody] UpdatePartRequest req)
     {
         try
@@ -678,6 +720,11 @@ public class WorkOrdersController(DataService data) : ControllerBase
             await data.UpdatePartAsync(id, partId, req, User.GetUserId());
             return NoContent();
         }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { error = ex.Message });
+        }
+        catch (PlanFeatureDeniedException ex) { return ex.ToActionResult(); }
         catch (Microsoft.Data.SqlClient.SqlException ex) when (ex.Number >= 50000)
         {
             return BadRequest(new { error = ex.Message });
@@ -689,6 +736,7 @@ public class WorkOrdersController(DataService data) : ControllerBase
     }
 
     [HttpDelete("{id:guid}/parts/{partId:guid}")]
+    [HttpPost("{id:guid}/parts/{partId:guid}/delete")]
     public async Task<ActionResult> DeletePart(Guid id, Guid partId)
     {
         try
@@ -747,6 +795,7 @@ public class StaffController(DataService data) : ControllerBase
     [HttpGet("performance")]
     public async Task<ActionResult> GetPerformance([FromQuery] DateOnly? date, [FromQuery] Guid? userId)
     {
+        if (User.GetShopRole() == "personel") return Forbid();
         try
         {
             var d = date ?? DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3));
@@ -791,6 +840,7 @@ public class SuppliersController(DataService data, PlanEntitlementsService plans
         [FromQuery] DateOnly? from,
         [FromQuery] DateOnly? to)
     {
+        if (User.GetShopRole() == "personel") return Forbid();
         try
         {
             await plans.RequireFeatureAsync("suppliers");

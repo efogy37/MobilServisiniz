@@ -53,6 +53,12 @@
 </div>
 
 <div class="row g-3">
+    @{
+        var shopRole = User.FindFirst("shop_role")?.Value;
+        var canSeeReports = shopRole == "admin" || shopRole == "usta";
+    }
+    @if (canSeeReports)
+    {
     <div class="col-lg-6">
         <div class="card-panel p-4">
             <h2 class="h5 fw-bold mb-3">Raporlar</h2>
@@ -62,6 +68,7 @@
             </a>
         </div>
     </div>
+    }
     <div class="col-lg-6">
         <div class="card-panel p-4">
             <h2 class="h5 fw-bold mb-3">Müşteriler</h2>

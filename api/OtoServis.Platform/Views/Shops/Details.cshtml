@@ -86,7 +86,7 @@
                             </div>
                         </div>
                     </div>
-                    <button type="submit" class="btn btn-sm text-white mt-3" style="background:#2f4a86">Kaydet</button>
+                    <button type="submit" class="btn btn-mobile-block text-white mt-3" style="background:#2f4a86">Kaydet</button>
                 </form>
             </div>
         </div>
@@ -107,35 +107,35 @@
                 </form>
             }
         </div>
-        <form asp-action="SetLicense" method="post" class="row g-2 align-items-end">
+        <form asp-action="SetLicense" method="post" class="row g-2 align-items-end mobile-form">
             @Html.AntiForgeryToken()
             <input type="hidden" name="id" value="@Model.Shop.Id" />
-            <div class="col-md-3">
+            <div class="col-12 col-md-3">
                 <label class="form-label small">Lisans tipi</label>
-                <select name="LicenseType" class="form-select form-select-sm" asp-for="LicenseEdit.LicenseType">
+                <select name="LicenseType" class="form-select" asp-for="LicenseEdit.LicenseType">
                     @foreach (var t in LicenseHelper.Types)
                     {
                         <option value="@t.Code">@t.Label</option>
                     }
                 </select>
             </div>
-            <div class="col-md-3">
+            <div class="col-12 col-md-3">
                 <label class="form-label small">Bitiş (elle, opsiyonel)</label>
-                <input type="date" name="LicenseExpiresAt" class="form-control form-control-sm"
+                <input type="date" name="LicenseExpiresAt" class="form-control"
                        value="@(Model.LicenseEdit.LicenseExpiresAt?.ToString("yyyy-MM-dd"))" />
             </div>
-            <div class="col-md-4">
+            <div class="col-12 col-md-4">
                 <label class="form-label small">Not</label>
-                <input name="Note" class="form-control form-control-sm" placeholder="Örn. havale alındı" />
+                <input name="Note" class="form-control" placeholder="Örn. havale alındı" />
             </div>
-            <div class="col-md-2">
-                <button type="submit" class="btn btn-sm text-white w-100" style="background:#2f4a86">Kaydet</button>
+            <div class="col-12 col-md-2">
+                <button type="submit" class="btn btn-mobile-block text-white w-100" style="background:#2f4a86">Kaydet</button>
             </div>
         </form>
         @if (Model.LicenseEvents.Count > 0)
         {
             <div class="table-responsive mt-3">
-                <table class="table table-sm mb-0">
+                <table class="table table-sm mb-0 table-stack">
                     <thead class="table-light">
                     <tr><th>Tarih</th><th>Tip</th><th>Bitiş</th><th>Not</th></tr>
                     </thead>
@@ -143,10 +143,10 @@
                     @foreach (var e in Model.LicenseEvents)
                     {
                         <tr>
-                            <td class="small">@e.CreatedAt.Add(tr).ToString("dd.MM.yyyy HH:mm")</td>
-                            <td class="small">@LicenseHelper.TypeLabel(e.NewLicenseType)</td>
-                            <td class="small">@(e.NewExpiresAt?.ToString("dd.MM.yyyy") ?? "Sınırsız")</td>
-                            <td class="small">@(e.Note ?? "-")</td>
+                            <td class="cell-main small" data-label="Tarih">@e.CreatedAt.Add(tr).ToString("dd.MM.yyyy HH:mm")</td>
+                            <td class="small" data-label="Tip">@LicenseHelper.TypeLabel(e.NewLicenseType)</td>
+                            <td class="small" data-label="Bitiş">@(e.NewExpiresAt?.ToString("dd.MM.yyyy") ?? "Sınırsız")</td>
+                            <td class="small" data-label="Not">@(e.Note ?? "-")</td>
                         </tr>
                     }
                     </tbody>
@@ -162,10 +162,11 @@
             <h2 class="h6 fw-bold mb-0">Kullanıcılar</h2>
         </div>
         <div class="table-responsive mb-4">
-            <table class="table table-sm align-middle">
+            <table class="table table-sm align-middle table-stack">
                 <thead class="table-light">
                 <tr>
                     <th>Ad</th>
+                    <th>Kullanıcı adı</th>
                     <th>Telefon</th>
                     <th>Rol</th>
                     <th>Durum</th>
@@ -176,7 +177,7 @@
                 @foreach (var u in Model.Users)
                 {
                     <tr class="@(!u.IsActive ? "table-secondary" : "")">
-                        <td>
+                        <td class="cell-main">
                             @u.FullName
                             @if (u.IsOwner)
                             {
@@ -187,11 +188,23 @@
                                 <div class="small text-muted">@u.Title</div>
                             }
                         </td>
-                        <td>@u.Phone</td>
-                        <td>@RoleLabels.Label(u.Role)</td>
-                        <td>@(u.IsActive ? "Aktif" : "Pasif")</td>
-                        <td class="text-end">
+                        <td data-label="Kullanıcı adı">
+                            @if (!string.IsNullOrEmpty(u.Username))
+                            {
+                                <code>@u.Username</code>
+                            }
+                            else
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                        </td>
+                        <td data-label="Telefon">@u.Phone</td>
+                        <td data-label="Rol">@RoleLabels.Label(u.Role)</td>
+                        <td data-label="Durum">@(u.IsActive ? "Aktif" : "Pasif")</td>
+                        <td class="text-end cell-actions">
                             <div class="d-inline-flex flex-wrap gap-1 justify-content-end">
+                                <button type="button" class="btn btn-sm btn-outline-primary"
+                                        data-bs-toggle="collapse" data-bs-target="#edit-@u.UserId">Düzenle</button>
                                 @if (u.IsActive)
                                 {
                                     <form asp-action="DeactivateUser" method="post" class="d-inline">
@@ -214,6 +227,49 @@
                                 <button type="button" class="btn btn-sm btn-outline-secondary"
                                         data-bs-toggle="collapse" data-bs-target="#pwd-@u.UserId">Şifre</button>
                             </div>
+                            <div class="collapse mt-2 text-start" id="edit-@u.UserId">
+                                <form asp-action="UpdateUser" method="post" class="row g-2 align-items-end border rounded-3 p-2 bg-light">
+                                    @Html.AntiForgeryToken()
+                                    <input type="hidden" name="id" value="@Model.Shop.Id" />
+                                    <input type="hidden" name="UserId" value="@u.UserId" />
+                                    <div class="col-12 col-md-3">
+                                        <label class="form-label small mb-0">Ad soyad</label>
+                                        <input name="FullName" class="form-control form-control-sm" value="@u.FullName" required />
+                                    </div>
+                                    <div class="col-12 col-md-2">
+                                        <label class="form-label small mb-0">Kullanıcı adı</label>
+                                        <input name="Username" class="form-control form-control-sm" value="@u.Username"
+                                               required minlength="3" maxlength="50" autocomplete="username" />
+                                    </div>
+                                    <div class="col-12 col-md-2">
+                                        <label class="form-label small mb-0">Telefon</label>
+                                        <input name="Phone" class="form-control form-control-sm" value="@u.Phone" required />
+                                    </div>
+                                    <div class="col-6 col-md-2">
+                                        <label class="form-label small mb-0">Rol</label>
+                                        <select name="Role" class="form-select form-select-sm">
+                                            @foreach (var r in RoleLabels.ShopRoles)
+                                            {
+                                                if (u.Role == r.Code)
+                                                {
+                                                    <option value="@r.Code" selected="selected">@r.Label</option>
+                                                }
+                                                else
+                                                {
+                                                    <option value="@r.Code">@r.Label</option>
+                                                }
+                                            }
+                                        </select>
+                                    </div>
+                                    <div class="col-6 col-md-2">
+                                        <label class="form-label small mb-0">Ünvan</label>
+                                        <input name="Title" class="form-control form-control-sm" value="@u.Title" />
+                                    </div>
+                                    <div class="col-12 col-md-1">
+                                        <button type="submit" class="btn btn-sm btn-primary w-100">Kaydet</button>
+                                    </div>
+                                </form>
+                            </div>
                             <div class="collapse mt-2" id="pwd-@u.UserId">
                                 <form asp-action="ResetPassword" method="post" class="d-flex gap-2 justify-content-end">
                                     @Html.AntiForgeryToken()
@@ -232,36 +288,41 @@
         </div>
 
         <h3 class="h6 fw-bold">Kullanıcı ekle</h3>
-        <form asp-action="AddUser" method="post" class="row g-2 align-items-end">
+        <form asp-action="AddUser" method="post" class="row g-2 align-items-end mobile-form">
             @Html.AntiForgeryToken()
             <input type="hidden" name="id" value="@Model.Shop.Id" />
-            <div class="col-md-3">
-                <label class="form-label small">Ad soyad</label>
-                <input name="FullName" class="form-control form-control-sm" required />
+            <div class="col-12 col-md-2">
+                <label class="form-label">Ad soyad</label>
+                <input name="FullName" class="form-control" autocomplete="name" required />
             </div>
-            <div class="col-md-2">
-                <label class="form-label small">Telefon</label>
-                <input name="Phone" class="form-control form-control-sm" required />
+            <div class="col-12 col-md-2">
+                <label class="form-label">Kullanıcı adı</label>
+                <input name="Username" class="form-control" minlength="3" maxlength="50"
+                       placeholder="Boş = otomatik" autocomplete="username" />
             </div>
-            <div class="col-md-2">
-                <label class="form-label small">Şifre</label>
-                <input name="Password" type="password" class="form-control form-control-sm" required minlength="4" />
+            <div class="col-12 col-md-2">
+                <label class="form-label">Telefon</label>
+                <input name="Phone" class="form-control" inputmode="tel" autocomplete="tel" required />
             </div>
-            <div class="col-md-2">
-                <label class="form-label small">Rol</label>
-                <select name="Role" class="form-select form-select-sm">
+            <div class="col-12 col-md-2">
+                <label class="form-label">Şifre</label>
+                <input name="Password" type="password" class="form-control" autocomplete="new-password" required minlength="4" />
+            </div>
+            <div class="col-12 col-md-1">
+                <label class="form-label">Rol</label>
+                <select name="Role" class="form-select">
                     @foreach (var r in RoleLabels.ShopRoles)
                     {
                         <option value="@r.Code">@r.Label</option>
                     }
                 </select>
             </div>
-            <div class="col-md-2">
-                <label class="form-label small">Ünvan</label>
-                <input name="Title" class="form-control form-control-sm" />
+            <div class="col-12 col-md-2">
+                <label class="form-label">Ünvan</label>
+                <input name="Title" class="form-control" />
             </div>
-            <div class="col-md-1">
-                <button type="submit" class="btn btn-sm text-white w-100" style="background:#2f4a86">Ekle</button>
+            <div class="col-12 col-md-1">
+                <button type="submit" class="btn btn-mobile-block text-white w-100" style="background:#2f4a86">Ekle</button>
             </div>
         </form>
     </div>
@@ -301,7 +362,7 @@
             <div class="card-body">
                 <h2 class="h6 fw-bold mb-3">Durum hareketleri</h2>
                 <div class="table-responsive">
-                    <table class="table table-sm align-middle mb-0">
+                    <table class="table table-sm align-middle mb-0 table-stack">
                         <thead class="table-light">
                         <tr>
                             <th>Zaman</th>
@@ -321,19 +382,19 @@
                             {
                                 var local = h.ChangedAt.Add(tr);
                                 <tr>
-                                    <td class="small text-nowrap">@local.ToString("dd.MM.yyyy HH:mm")</td>
-                                    <td>
+                                    <td class="small text-nowrap" data-label="Zaman">@local.ToString("dd.MM.yyyy HH:mm")</td>
+                                    <td class="cell-main" data-label="İş emri">
                                         <div class="fw-semibold">#@h.OrderNo</div>
                                         <div class="small text-muted">@h.Plate</div>
                                     </td>
-                                    <td class="small">
+                                    <td class="small" data-label="Durum">
                                         @RoleLabels.StatusLabel(h.OldStatus) → <strong>@RoleLabels.StatusLabel(h.NewStatus)</strong>
                                         @if (!string.IsNullOrEmpty(h.ChangedByName))
                                         {
                                             <div class="text-muted">@h.ChangedByName</div>
                                         }
                                     </td>
-                                    <td class="small">@(h.AssignedTo ?? "-")</td>
+                                    <td class="small" data-label="Atanan">@(h.AssignedTo ?? "-")</td>
                                 </tr>
                             }
                         }
@@ -348,7 +409,7 @@
             <div class="card-body">
                 <h2 class="h6 fw-bold mb-3">Ödemeler</h2>
                 <div class="table-responsive">
-                    <table class="table table-sm align-middle mb-0">
+                    <table class="table table-sm align-middle mb-0 table-stack">
                         <thead class="table-light">
                         <tr>
                             <th>Zaman</th>
@@ -367,12 +428,12 @@
                             {
                                 var local = p.PaidAt.Add(tr);
                                 <tr>
-                                    <td class="small text-nowrap">@local.ToString("dd.MM.yyyy HH:mm")</td>
-                                    <td>
+                                    <td class="small text-nowrap" data-label="Zaman">@local.ToString("dd.MM.yyyy HH:mm")</td>
+                                    <td class="cell-main" data-label="İş emri">
                                         <div class="fw-semibold">#@p.OrderNo · @p.Plate</div>
                                         <div class="small text-muted">@p.Method @(p.ReceivedByName != null ? "· " + p.ReceivedByName : "")</div>
                                     </td>
-                                    <td class="fw-semibold text-nowrap">@p.Amount.ToString("N0") ₺</td>
+                                    <td class="fw-semibold text-nowrap" data-label="Tutar">@p.Amount.ToString("N0") ₺</td>
                                 </tr>
                             }
                         }

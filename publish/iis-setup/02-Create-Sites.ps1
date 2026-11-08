@@ -4,11 +4,11 @@
 #
 # On kosul:
 #   - 01-Install-HostingBundle.ps1 calistirilmis olmali (IIS + Hosting Bundle + URL Rewrite)
-#   - C:\OtoServis\api, C:\OtoServis\admin, C:\OtoServis\platform klasorleri zaten mevcut olmali
+#   - C:\inetpub\wwwroot\mobilservisiniz altinda api, admin, platform, app, site klasorleri mevcut olmali
 #   - Cloudflare Origin CA sertifikasi bir .pfx dosyasi olarak sunucuda bir yerde olmali
 #
 # Kullanim (PfxPath verirseniz sertifikayi da otomatik ice aktarir):
-#   .\02-Create-Sites.ps1 -DomainRoot "mobilservisiniz.com" -PfxPath "C:\OtoServis\cf-origin.pfx" -PfxPassword "sifre"
+#   .\02-Create-Sites.ps1 -DomainRoot "mobilservisiniz.com" -PfxPath "C:\inetpub\wwwroot\mobilservisiniz\cf-origin.pfx" -PfxPassword "sifre"
 #
 # Sertifika zaten certlm.msc'ye ice aktarilmissa, thumbprint ile de calistirabilirsiniz:
 #   .\02-Create-Sites.ps1 -DomainRoot "mobilservisiniz.com" -CertThumbprint "ABCDEF...."
@@ -22,7 +22,7 @@ param(
     [switch]$SkipLegacyPorts
 )
 
-if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\inetpub\wwwroot\mobilservisiniz" } }
 
 $ErrorActionPreference = "Stop"
 Import-Module WebAdministration
@@ -116,6 +116,51 @@ foreach ($svc in $services) {
         Write-Host "UYARI: $siteName baslatilamadi (port $($svc.LegacyPort) hala eski dotnet sureci tarafindan kullaniliyor olabilir)." -ForegroundColor Yellow
         Write-Host "  Once 04-Cutover.ps1'i calistirin, sonra bu scripti tekrar calistirin." -ForegroundColor Yellow
     }
+}
+
+$staticSites = @(
+    @{ Key = "Web";  Pool = "OtoServisWebPool";  Path = (Join-Path $BaseDir "app");  Hosts = @("app.$DomainRoot") },
+    @{ Key = "Site"; Pool = "OtoServisSitePool"; Path = (Join-Path $BaseDir "site"); Hosts = @($DomainRoot, "www.$DomainRoot") }
+)
+foreach ($st in $staticSites) {
+    $siteName = "OtoServis-$($st.Key)"
+    Write-Host "`n=== $siteName ($($st.Path)) ===" -ForegroundColor Cyan
+    if (-not (Test-Path $st.Path)) {
+        Write-Host "UYARI: $($st.Path) bulunamadi, atlaniyor." -ForegroundColor Yellow
+        continue
+    }
+    if (-not (Test-Path "IIS:\AppPools\$($st.Pool)")) {
+        New-WebAppPool -Name $st.Pool | Out-Null
+    }
+    Set-ItemProperty "IIS:\AppPools\$($st.Pool)" -Name "managedRuntimeVersion" -Value ""
+    $primary = $st.Hosts[0]
+    if (-not (Test-Path "IIS:\Sites\$siteName")) {
+        New-Website -Name $siteName -PhysicalPath $st.Path -ApplicationPool $st.Pool -Port 80 -HostHeader $primary | Out-Null
+        Write-Host "Site olusturuldu: $siteName -> $($st.Path)"
+    } else {
+        Set-ItemProperty "IIS:\Sites\$siteName" -Name "physicalPath" -Value $st.Path
+        Set-ItemProperty "IIS:\Sites\$siteName" -Name "applicationPool" -Value $st.Pool
+        Write-Host "Site guncellendi: $siteName -> $($st.Path)"
+    }
+    foreach ($hostname in $st.Hosts) {
+        $httpExists = Get-WebBinding -Name $siteName -Protocol "http" -ErrorAction SilentlyContinue |
+            Where-Object { $_.bindingInformation -like "*:80:$hostname" }
+        if (-not $httpExists) {
+            New-WebBinding -Name $siteName -Protocol "http" -Port 80 -HostHeader $hostname | Out-Null
+        }
+        $httpsExists = Get-WebBinding -Name $siteName -Protocol "https" -ErrorAction SilentlyContinue |
+            Where-Object { $_.bindingInformation -like "*:443:$hostname" }
+        if (-not $httpsExists) {
+            New-WebBinding -Name $siteName -Protocol "https" -Port 443 -HostHeader $hostname -SslFlags 1
+        }
+        $binding = Get-WebBinding -Name $siteName -Protocol "https" |
+            Where-Object { $_.bindingInformation -like "*:443:$hostname" }
+        if ($binding) { $binding.AddSslCertificate($CertThumbprint, "My") }
+    }
+    try {
+        Start-WebAppPool -Name $st.Pool -ErrorAction SilentlyContinue
+        Start-Website -Name $siteName -ErrorAction SilentlyContinue
+    } catch {}
 }
 
 Write-Host "`n=== Firewall ===" -ForegroundColor Cyan

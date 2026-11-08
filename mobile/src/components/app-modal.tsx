@@ -24,12 +24,14 @@ export function AppSheet({
   title,
   subtitle,
   children,
+  footer,
 }: {
   visible: boolean
   onClose: () => void
   title: string
   subtitle?: string
   children: ReactNode
+  footer?: ReactNode
 }) {
   const insets = useSafeAreaInsets()
   const { height: windowHeight } = useWindowDimensions()
@@ -48,15 +50,18 @@ export function AppSheet({
     return () => clearTimeout(t)
   }, [visible, lift])
 
+  // Web'de visible=false Modal overlay'i bazen yerinde bırakır; kapanınca tamamen kaldır.
+  if (!visible) return null
+
   return (
     <Modal
-      visible={visible}
+      visible
       transparent
-      animationType="fade"
+      animationType={Platform.OS === 'web' ? 'none' : 'fade'}
       onRequestClose={onClose}
       statusBarTranslucent
     >
-      <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+      <View style={{ flex: 1, justifyContent: 'flex-end' }} pointerEvents="box-none">
         <Pressable
           onPress={onClose}
           accessibilityRole="button"
@@ -66,6 +71,7 @@ export function AppSheet({
             right: 0,
             bottom: 0,
             left: 0,
+            zIndex: 0,
             backgroundColor: 'rgba(43, 50, 68, 0.4)',
           }}
         />
@@ -73,6 +79,7 @@ export function AppSheet({
         <View
           className="rounded-t-3xl border-t border-border bg-card px-4 pt-3"
           style={{
+            zIndex: 1,
             maxHeight: maxSheetHeight,
             paddingBottom: bottomPad,
             marginBottom: lift,
@@ -109,6 +116,7 @@ export function AppSheet({
           >
             {children}
           </ScrollView>
+          {footer ? <View className="pt-1">{footer}</View> : null}
         </View>
       </View>
     </Modal>

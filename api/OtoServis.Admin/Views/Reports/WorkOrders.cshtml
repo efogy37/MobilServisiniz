@@ -71,7 +71,13 @@
                 var outstanding = row.GrandTotal - row.PaidTotal;
                 <tr>
                     <td class="fw-semibold">#@row.OrderNo</td>
-                    <td>@row.Plate</td>
+                    <td>
+                        @row.Plate
+                        @if (row.VisitNumber > 1)
+                        {
+                            <span class="badge text-bg-secondary ms-1">@row.VisitNumber. kez</span>
+                        }
+                    </td>
                     <td>@row.CustomerName</td>
                     <td><span class="@StatusBadge(row.Status)">@row.Status</span></td>
                     <td class="text-muted small">@row.OpenedAt.ToLocalTime().ToString("dd.MM.yyyy")</td>

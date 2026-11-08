@@ -12,8 +12,8 @@ $ErrorActionPreference = "Stop"
 Import-Module WebAdministration
 
 $legacyPorts = @(5280, 5281, 5282)
-$pools = @("OtoServisApiPool", "OtoServisAdminPool", "OtoServisPlatformPool")
-$sites = @("OtoServis-Api", "OtoServis-Admin", "OtoServis-Platform")
+$pools = @("OtoServisApiPool", "OtoServisAdminPool", "OtoServisPlatformPool", "OtoServisWebPool", "OtoServisSitePool")
+$sites = @("OtoServis-Api", "OtoServis-Admin", "OtoServis-Platform", "OtoServis-Web", "OtoServis-Site")
 
 Write-Host "=== 1/3: Eski dotnet surecleri durduruluyor ===" -ForegroundColor Cyan
 foreach ($port in $legacyPorts) {

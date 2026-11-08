@@ -5,7 +5,7 @@ using UglyToad.PdfPig;
 
 namespace OtoServis.Api.Services;
 
-public sealed record ParsedInvoiceLine(string Name, int Quantity, decimal UnitPrice, decimal LineTotal);
+public sealed record ParsedInvoiceLine(string Name, int Quantity, decimal UnitPrice, decimal LineTotal, string? Code = null);
 
 public sealed record ParsedInvoice(
     string? DocumentNo,
@@ -21,12 +21,52 @@ public static class InvoiceTextParser
         RegexOptions.Compiled);
 
     private static readonly Regex DocNoRx = new(
-        @"Evrak\s*No\.?\s*(?<v>\d+)",
+        @"(?:Evrak|Fatura)\s*No\.?\s*:?\s*(?<v>[A-Z0-9]{3,30})",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex DocDateRx = new(
-        @"Evrak\s*Tarihi\s*(?<v>\d{2}\.\d{2}\.\d{4})",
+        @"(?:Evrak|Fatura)\s*Tarihi\s*:?\s*(?<v>\d{2}[.\-/]\d{2}[.\-/]\d{4})",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>e-Fatura genel toplam satırları (KDV dahil).</summary>
+    private static readonly Regex GrandTotalRx = new(
+        @"(?:Ödenecek\s*Tutar|Vergiler\s*Dahil\s*Toplam\s*Tutar|KDV\s*Dahil\s*Toplam(?:\s*Tutar)?)\s*:?\s*(?<v>\d{1,3}(?:\.\d{3})*,\d{2})",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex ParcaciHeaderRx = new(
+        @"Stok\s*Ad[ıi]\s+Miktar[ıi]", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex EFaturaHintRx = new(
+        @"e-?\s*Fatura|ETTN|Fatura\s*No\s*:|Mal\s*/?\s*Hizmet|Stok\s*Kodu",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    public enum InvoiceFormat { Parcaci, EFatura, Unknown }
+
+    /// <summary>Metinden fatura formatını kestirir.</summary>
+    public static InvoiceFormat DetectFormat(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return InvoiceFormat.Unknown;
+        var parcaci = ParcaciHeaderRx.IsMatch(text) && text.Contains("Evrak", StringComparison.OrdinalIgnoreCase);
+        if (parcaci) return InvoiceFormat.Parcaci;
+        if (EFaturaHintRx.IsMatch(text)) return InvoiceFormat.EFatura;
+        return InvoiceFormat.Unknown;
+    }
+
+    /// <summary>Fatura üst bilgisi (no / tarih / KDV dahil genel toplam) — formattan bağımsız.</summary>
+    public static (string? DocNo, string? DocDate, decimal? GrandTotal) ExtractHeader(string text)
+    {
+        string? docNo = null, docDate = null;
+        decimal? grand = null;
+        var m = DocNoRx.Match(text);
+        if (m.Success) docNo = m.Groups["v"].Value;
+        var d = DocDateRx.Match(text);
+        if (d.Success) docDate = d.Groups["v"].Value.Replace('-', '.').Replace('/', '.');
+        // Birden fazla toplam satırı olabilir; en son geçeni (genelde "Ödenecek Tutar") al
+        Match? last = null;
+        foreach (Match g in GrandTotalRx.Matches(text)) last = g;
+        if (last is not null) grand = ParseMoney(last.Groups["v"].Value);
+        return (docNo, docDate, grand);
+    }
 
     private static readonly HashSet<string> SkipStarts = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -81,7 +121,7 @@ public static class InvoiceTextParser
             if (docDate is null)
             {
                 var m = DocDateRx.Match(line);
-                if (m.Success) docDate = m.Groups["v"].Value;
+                if (m.Success) docDate = m.Groups["v"].Value.Replace('-', '.').Replace('/', '.');
             }
 
             if (SkipStarts.Any(s => line.StartsWith(s, StringComparison.OrdinalIgnoreCase)))
@@ -143,7 +183,40 @@ public static class InvoiceTextParser
         var name = CleanName(head);
         if (name.Length < 2) return null;
 
-        return new ParsedInvoiceLine(name, qty, unit, total);
+        var split = SplitLeadingCode(name);
+        return new ParsedInvoiceLine(split.Name, qty, unit, total, split.Code);
+    }
+
+    /// <summary>
+    /// "AYD-01827 ROT BASI SOL" → Code=AYD-01827, Name=ROT BASI SOL.
+    /// "F-APS 14 ISITMA BUJİSİ" → Code=F-APS 14, Name=ISITMA BUJİSİ.
+    /// Kod yoksa Name aynen kalır.
+    /// </summary>
+    public static (string Name, string? Code) SplitLeadingCode(string name)
+    {
+        var parts = name.Trim().Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) return (name.Trim(), null);
+
+        var take = 0;
+        while (take < parts.Length - 1)
+        {
+            var p = parts[take];
+            var compact = Regex.Replace(p, @"[.\-_/]", "");
+            var hasDigit = p.Any(char.IsDigit);
+            var alphaPrefix = compact.Length is >= 1 and <= 6 && compact.All(char.IsLetter);
+            var codeToken = hasDigit && compact.Length >= 2 && compact.All(char.IsLetterOrDigit);
+            var nextHasDigit = take + 1 < parts.Length && parts[take + 1].Any(char.IsDigit);
+            if (codeToken || (alphaPrefix && nextHasDigit))
+            {
+                take++;
+                continue;
+            }
+            break;
+        }
+        if (take == 0) return (name.Trim(), null);
+        var rest = string.Join(" ", parts.Skip(take));
+        if (rest.Length < 2) return (name.Trim(), null);
+        return (rest, string.Join(" ", parts.Take(take)));
     }
 
     /// <summary>qty × unit ≈ total (küçük yuvarlama toleransı).</summary>

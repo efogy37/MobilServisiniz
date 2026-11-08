@@ -326,7 +326,16 @@ async function api<T>(
     if (t) headers.Authorization = `Bearer ${t}`
   }
 
-  const res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers })
+  let res: Response
+  try {
+    res = await fetch(`${API_BASE_URL}${path}`, { ...options, headers })
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : ''
+    if (msg === 'Load failed' || msg === 'Failed to fetch' || e instanceof TypeError) {
+      throw new Error('Sunucuya ulaşılamadı. API sitesini ve interneti kontrol edin.')
+    }
+    throw e
+  }
   if (!res.ok) {
     let body: any = null
     try {
@@ -370,6 +379,7 @@ async function api<T>(
       if (body.error.includes('telefon numarasıyla')) throw new PhoneConflictError(body.error)
       if (body.error.includes('tamamlanmış')) throw new WorkOrderCompletedError(body.error)
       if (body.error.includes('farklı bir günde')) throw new WorkOrderReopenBlockedError(body.error)
+      throw new Error(body.error)
     }
     let msg = `HTTP ${res.status}`
     if (body?.error) msg = body.error
@@ -446,11 +456,13 @@ type WoDetail = {
   openedAt?: string | null
   startedAt?: string | null
   closedAt?: string | null
+  visitNumber?: number | null
 }
 
 function mapWorkOrder(wo: WoDetail): Vehicle {
   const v = wo.vehicle
   const c = wo.customer
+  const visitNumber = wo.visitNumber != null ? Number(wo.visitNumber) : undefined
   return {
     id: v.id,
     workOrderId: wo.id,
@@ -469,6 +481,7 @@ function mapWorkOrder(wo: WoDetail): Vehicle {
     createdAt: wo.openedAt ?? new Date().toISOString(),
     startedAt: wo.startedAt ?? undefined,
     closedAt: wo.closedAt ?? undefined,
+    visitNumber: visitNumber && visitNumber > 0 ? visitNumber : undefined,
     laborTotal: wo.laborTotal != null ? Number(wo.laborTotal) : undefined,
     partsTotal: wo.partsTotal != null ? Number(wo.partsTotal) : undefined,
     discount: wo.discount != null ? Number(wo.discount) : undefined,
@@ -706,6 +719,9 @@ export type PaymentPendingItem = {
   grandTotal: number
   paidTotal: number
   remaining: number
+  visitNumber?: number
+  pendingSince?: string
+  daysWaiting?: number
 }
 
 export type PaymentsPendingReport = {
@@ -735,6 +751,9 @@ export async function getPaymentsPending(): Promise<PaymentsPendingReport> {
       grandTotal: number
       paidTotal: number
       remaining: number
+      visitNumber?: number
+      pendingSince?: string
+      daysWaiting?: number
     }[]
   }>('/api/reports/payments-pending')
   return {
@@ -749,6 +768,9 @@ export async function getPaymentsPending(): Promise<PaymentsPendingReport> {
       grandTotal: Number(i.grandTotal),
       paidTotal: Number(i.paidTotal),
       remaining: Number(i.remaining),
+      visitNumber: i.visitNumber != null ? Number(i.visitNumber) : undefined,
+      pendingSince: i.pendingSince ?? undefined,
+      daysWaiting: i.daysWaiting != null ? Number(i.daysWaiting) : undefined,
     })),
   }
 }
@@ -913,11 +935,20 @@ export async function createStock(data: Omit<StockProduct, 'id'>): Promise<Stock
   }
 }
 
+/**
+ * PDF'den okunan satır. unitPrice/lineTotal: e-Fatura'da KDV DAHİL net; Parçacı'da fatura değeri.
+ * code: faturadaki ORİJİNAL stok kodu (firma ön ekleriyle), brand: marka.
+ */
 export type InvoiceScanLine = {
   name: string
   quantity: number
   unitPrice: number
   lineTotal: number
+  code?: string
+  brand?: string
+  netUnitPriceExclVat?: number
+  vatRate?: number
+  warning?: string
 }
 
 export type InvoiceScanResult = {
@@ -925,14 +956,32 @@ export type InvoiceScanResult = {
   documentDate?: string
   lines: InvoiceScanLine[]
   provider?: string
+  supplierName?: string
+  grandTotal?: number
+  format?: 'parcaci' | 'efatura'
+  warning?: string
 }
 
 export async function scanInvoiceApi(fileBase64: string, mimeType = 'application/pdf'): Promise<InvoiceScanResult> {
   const raw = await api<{
     documentNo?: string
     documentDate?: string
-    lines: { name: string; quantity: number; unitPrice: number; lineTotal: number }[]
+    lines: {
+      name: string
+      quantity: number
+      unitPrice: number
+      lineTotal: number
+      code?: string | null
+      brand?: string | null
+      netUnitPriceExclVat?: number | null
+      vatRate?: number | null
+      warning?: string | null
+    }[]
     provider?: string
+    supplierName?: string | null
+    grandTotal?: number | null
+    format?: string
+    warning?: string | null
   }>('/api/ai/scan-invoice', {
     method: 'POST',
     body: JSON.stringify({ fileBase64, mimeType }),
@@ -941,13 +990,93 @@ export async function scanInvoiceApi(fileBase64: string, mimeType = 'application
     documentNo: raw.documentNo,
     documentDate: raw.documentDate,
     provider: raw.provider,
+    supplierName: raw.supplierName ?? undefined,
+    grandTotal: raw.grandTotal != null ? Number(raw.grandTotal) : undefined,
+    format: raw.format === 'efatura' ? 'efatura' : 'parcaci',
+    warning: raw.warning ?? undefined,
     lines: (raw.lines ?? []).map((l) => ({
       name: (l.name ?? '').trim(),
       quantity: Math.max(1, Number(l.quantity) || 1),
       unitPrice: Number(l.unitPrice) || 0,
       lineTotal: Number(l.lineTotal) || 0,
+      code: l.code?.trim() || undefined,
+      brand: l.brand?.trim() || undefined,
+      netUnitPriceExclVat: l.netUnitPriceExclVat != null ? Number(l.netUnitPriceExclVat) : undefined,
+      vatRate: l.vatRate != null ? Number(l.vatRate) : undefined,
+      warning: l.warning ?? undefined,
     })),
   }
+}
+
+/* ---- PDF satırı ↔ stok eşleştirme ---- */
+export type MatchCandidate = {
+  stockId: string
+  name: string
+  code?: string
+  quantity: number
+  price: number
+  score: number
+  reason: string
+}
+
+export type MatchStatus = 'exact' | 'multiple' | 'suggested' | 'none'
+
+export type MatchLineResult = {
+  index: number
+  rawCode?: string
+  manufacturerCode?: string
+  status: MatchStatus
+  candidates: MatchCandidate[]
+}
+
+export async function matchStockLinesApi(
+  supplierId: string | null | undefined,
+  lines: { index: number; name: string; rawCode?: string; brand?: string }[],
+): Promise<MatchLineResult[]> {
+  if (lines.length === 0) return []
+  const raw = await api<
+    {
+      index: number
+      rawCode?: string | null
+      manufacturerCode?: string | null
+      status: string
+      candidates: {
+        stockId: string
+        name: string
+        code?: string | null
+        quantity: number
+        price: number
+        score: number
+        reason: string
+      }[]
+    }[]
+  >('/api/stock/match-lines', {
+    method: 'POST',
+    body: JSON.stringify({
+      supplierId: supplierId || null,
+      lines: lines.map((l) => ({
+        index: l.index,
+        name: l.name,
+        rawCode: l.rawCode || null,
+        brand: l.brand || null,
+      })),
+    }),
+  })
+  return (raw ?? []).map((r) => ({
+    index: r.index,
+    rawCode: r.rawCode ?? undefined,
+    manufacturerCode: r.manufacturerCode ?? undefined,
+    status: (['exact', 'multiple', 'suggested', 'none'].includes(r.status) ? r.status : 'none') as MatchStatus,
+    candidates: (r.candidates ?? []).map((c) => ({
+      stockId: c.stockId,
+      name: c.name,
+      code: c.code ?? undefined,
+      quantity: Number(c.quantity) || 0,
+      price: Number(c.price) || 0,
+      score: Number(c.score) || 0,
+      reason: c.reason,
+    })),
+  }))
 }
 
 export type ImportPurchaseLine = {
@@ -956,7 +1085,13 @@ export type ImportPurchaseLine = {
   unitPrice: number
   salePrice?: number
   category?: StockCategory
+  /** Faturadaki orijinal kod (ön ekleriyle) */
   code?: string
+  /** Kullanıcının/otomatik eşleşmenin seçtiği mevcut stok ürünü */
+  stockProductId?: string
+  /** Ön ekleri soyulmuş üretici kodu (yeni ürünün kodu olur) */
+  manufacturerCode?: string
+  brand?: string
 }
 
 export async function importPurchaseApi(
@@ -978,6 +1113,9 @@ export async function importPurchaseApi(
         salePrice: l.salePrice ?? l.unitPrice,
         category: l.category ?? 'diger',
         code: l.code || null,
+        stockProductId: l.stockProductId || null,
+        manufacturerCode: l.manufacturerCode || null,
+        brand: l.brand || null,
       })),
     }),
   })
@@ -992,6 +1130,7 @@ export async function updateStockApi(id: string, data: Omit<StockProduct, 'id'>)
     price: number
     quantity: number
     minQuantity: number
+    purchasePrice?: number | null
   }>(`/api/stock/${id}`, {
     method: 'PUT',
     body: JSON.stringify({
@@ -1001,6 +1140,7 @@ export async function updateStockApi(id: string, data: Omit<StockProduct, 'id'>)
       price: data.price,
       quantity: data.stock,
       minQuantity: 0,
+      purchasePrice: data.purchasePrice ?? null,
     }),
   })
   return {
@@ -1010,6 +1150,7 @@ export async function updateStockApi(id: string, data: Omit<StockProduct, 'id'>)
     code: s.code ?? '-',
     price: Number(s.price),
     stock: s.quantity,
+    purchasePrice: s.purchasePrice != null ? Number(s.purchasePrice) : undefined,
   }
 }
 
@@ -1031,6 +1172,8 @@ export async function createVehicleApi(
   km: string,
   complaint?: string,
   complaintCategory?: ComplaintCategory,
+  /** YYYY-MM-DD (TR takvim günü). Boşsa bugün. */
+  openedAt?: string,
 ): Promise<Vehicle> {
   const res = await api<{ vehicleId: string; workOrderId: string }>('/api/vehicles', {
     method: 'POST',
@@ -1048,6 +1191,7 @@ export async function createVehicleApi(
       mileage: km ? parseInt(km.replace(/\D/g, ''), 10) : null,
       complaint: complaint || null,
       complaintCategory: complaint ? complaintCategory || 'diger' : null,
+      openedAt: openedAt || null,
     }),
   })
   // Az önce oluşturulan iş emrini doğrudan kendi id'siyle çekiyoruz.
@@ -1119,6 +1263,74 @@ export async function getCustomerActivity(customerId: string): Promise<ActivityL
     userName: r.userName,
     createdAt: r.createdAt,
   }))
+}
+
+export type VehicleHistoryService = { id: string; title: string; price: number }
+export type VehicleHistoryPart = {
+  id: string
+  name: string
+  quantity: number
+  unitPrice: number
+}
+export type VehicleVisitHistory = {
+  workOrderId: string
+  orderNo: number
+  status: JobStatus
+  openedAt: string
+  visitNumber: number
+  services: VehicleHistoryService[]
+  parts: VehicleHistoryPart[]
+}
+export type VehicleServiceHistory = {
+  vehicleId: string
+  plate: string
+  brand: string
+  model: string
+  visits: VehicleVisitHistory[]
+}
+
+export async function getVehicleServiceHistory(
+  vehicleId: string,
+): Promise<VehicleServiceHistory> {
+  const d = await api<{
+    vehicleId: string
+    plate: string
+    brand: string
+    model: string
+    visits: {
+      workOrderId: string
+      orderNo: number
+      status: string
+      openedAt: string
+      visitNumber: number
+      services: { id: string; title: string; price: number }[]
+      parts: { id: string; name: string; quantity: number; unitPrice: number }[]
+    }[]
+  }>(`/api/vehicles/${encodeURIComponent(vehicleId)}/service-history`)
+  return {
+    vehicleId: d.vehicleId,
+    plate: d.plate,
+    brand: d.brand,
+    model: d.model,
+    visits: (d.visits ?? []).map((v) => ({
+      workOrderId: v.workOrderId,
+      orderNo: Number(v.orderNo),
+      status: mapStatus(v.status),
+      openedAt: v.openedAt,
+      visitNumber: Number(v.visitNumber) || 1,
+      services: (v.services ?? []).map((s) => ({
+        id: s.id,
+        title: s.title,
+        price: Number(s.price),
+      })),
+      parts: (v.parts ?? []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        quantity: Number(p.quantity),
+        unitPrice: Number(p.unitPrice),
+      })),
+    })),
+  }
 }
 
 export async function loadVehiclesByCustomer(customerId: string): Promise<CustomerVehicleSummary[]> {
@@ -1255,7 +1467,7 @@ export async function updateWorkOrderPayment(
   return api<WorkOrderPaymentResult>(
     `/api/workorders/${workOrderId}/payments/${paymentId}`,
     {
-      method: 'PUT',
+      method: 'POST',
       body: JSON.stringify({ amount, method }),
     },
   )
@@ -1266,8 +1478,8 @@ export async function deleteWorkOrderPayment(
   paymentId: string,
 ): Promise<WorkOrderPaymentResult> {
   return api<WorkOrderPaymentResult>(
-    `/api/workorders/${workOrderId}/payments/${paymentId}`,
-    { method: 'DELETE' },
+    `/api/workorders/${workOrderId}/payments/${paymentId}/delete`,
+    { method: 'POST' },
   )
 }
 
@@ -1276,7 +1488,7 @@ export async function updateWorkOrderDiscount(
   amount: number,
 ): Promise<WorkOrderPaymentResult> {
   return api<WorkOrderPaymentResult>(`/api/workorders/${workOrderId}/discount`, {
-    method: 'PUT',
+    method: 'POST',
     body: JSON.stringify({ amount }),
   })
 }
@@ -1340,6 +1552,10 @@ export async function addPartApi(
       supplierId: product.supplierId ?? null,
       purchasePrice: product.purchasePrice ?? null,
       force,
+      supplierCode: product.supplierCode ?? null,
+      matchedStockProductId: product.matchedStockProductId ?? null,
+      manufacturerCode: product.manufacturerCode ?? null,
+      brand: product.brand ?? null,
     }),
   })
 }
@@ -1350,18 +1566,24 @@ export async function updatePartApi(
   data: Omit<ProductItem, 'id'>,
 ) {
   await api(`/api/workorders/${workOrderId}/parts/${partId}`, {
-    method: 'PATCH',
+    method: 'POST',
     body: JSON.stringify({
       name: data.name,
       quantity: data.quantity,
       unitPrice: data.price,
       purchasePrice: data.purchasePrice ?? null,
+      source: data.source,
+      supplierId: data.supplierId ?? null,
+      stockProductId: data.stockProductId ?? null,
+      supplierCode: data.supplierCode ?? null,
+      manufacturerCode: data.manufacturerCode ?? null,
+      matchedStockProductId: data.matchedStockProductId ?? null,
     }),
   })
 }
 
 export async function deletePartApi(workOrderId: string, partId: string) {
-  await api(`/api/workorders/${workOrderId}/parts/${partId}`, { method: 'DELETE' })
+  await api(`/api/workorders/${workOrderId}/parts/${partId}/delete`, { method: 'POST' })
 }
 
 export async function returnPartToSupplier(workOrderId: string, partId: string) {
@@ -1400,6 +1622,8 @@ export async function openNewVisit(
   vehicleId: string,
   complaint?: string,
   complaintCategory?: ComplaintCategory,
+  /** YYYY-MM-DD (TR takvim günü). Boşsa bugün. */
+  openedAt?: string,
 ): Promise<Vehicle> {
   const res = await api<{ vehicleId: string; workOrderId: string }>(
     `/api/vehicles/${vehicleId}/new-visit`,
@@ -1408,6 +1632,7 @@ export async function openNewVisit(
       body: JSON.stringify({
         complaint: complaint || null,
         complaintCategory: complaint ? complaintCategory || 'diger' : null,
+        openedAt: openedAt || null,
       }),
     },
   )
@@ -1419,14 +1644,28 @@ export type StockProductLite = {
   name: string
   price: number
   quantity: number
+  code?: string
+  purchasePrice?: number
 }
 
 export async function listStockProducts(search?: string): Promise<StockProductLite[]> {
   const q = search ? `?search=${encodeURIComponent(search)}` : ''
-  const rows = await api<{ id: string; name: string; price: number; quantity: number }[]>(
-    `/api/stock${q}`,
-  )
-  return rows.map((s) => ({ id: s.id, name: s.name, price: Number(s.price), quantity: s.quantity }))
+  const rows = await api<{
+    id: string
+    name: string
+    price: number
+    quantity: number
+    code?: string | null
+    purchasePrice?: number | null
+  }[]>(`/api/stock${q}`)
+  return rows.map((s) => ({
+    id: s.id,
+    name: s.name,
+    price: Number(s.price),
+    quantity: s.quantity,
+    code: s.code ?? undefined,
+    purchasePrice: s.purchasePrice != null ? Number(s.purchasePrice) : undefined,
+  }))
 }
 
 export type WorkOrderImage = {
@@ -1511,7 +1750,8 @@ export async function uploadWorkOrderImage(
   const t = await loadToken()
   if (t) headers.Authorization = `Bearer ${t}`
 
-  const res = await expoFetch(`${API_BASE_URL}/api/workorders/${workOrderId}/images`, {
+  const post = Platform.OS === 'web' ? fetch : expoFetch
+  const res = await post(`${API_BASE_URL}/api/workorders/${workOrderId}/images`, {
     method: 'POST',
     headers,
     body: form,
@@ -1548,6 +1788,8 @@ export type SupplierTransaction = {
   partQuantity?: number | null
   purchasePrice?: number | null
   plate?: string | null
+  brand?: string | null
+  model?: string | null
   workOrderId?: string | null
   vehicleId?: string | null
 }
@@ -1788,6 +2030,30 @@ export type StockPurchaseSaleRow = {
   profit: number
 }
 
+export type StockPurchaseSaleVehicleRow = {
+  vehicleId: string
+  plate: string
+  customerName?: string | null
+  brand?: string | null
+  model?: string | null
+  totalQuantity: number
+  totalPurchaseAmount: number
+  totalSaleAmount: number
+  profit: number
+}
+
+export type StockPurchaseSaleSupplierRow = {
+  supplierId?: string | null
+  supplierName: string
+  source: 'stok' | 'disaridan' | string
+  totalQuantity: number
+  totalPurchaseAmount: number
+  totalSaleAmount: number
+  profit: number
+}
+
+export type StockPurchaseSaleGroupBy = 'product' | 'vehicle' | 'supplier'
+
 export type StockMovementDetail = {
   date: string
   plate: string
@@ -1796,6 +2062,7 @@ export type StockMovementDetail = {
   unitPrice: number
   purchasePrice?: number | null
   supplierName?: string | null
+  partName?: string | null
 }
 
 export type AccountLedgerRow = {
@@ -1817,6 +2084,7 @@ export type CustomerLedgerEntry = {
 }
 
 export type TopServiceRow = { title: string; count: number; totalAmount: number }
+export type TopPartRow = { name: string; quantity: number; totalAmount: number }
 
 export type SalesReport = {
   workOrderCount: number
@@ -1830,6 +2098,10 @@ export type SalesReport = {
   havale: number
   diger: number
   topServices: TopServiceRow[]
+  /** Adet sırasıyla en çok yapılan işçilikler. */
+  topJobs: TopServiceRow[]
+  /** Adet sırasıyla en çok satılan yedek parçalar. */
+  topParts: TopPartRow[]
 }
 
 export async function getStockUsageReport(from: string, to: string): Promise<StockUsageRow[]> {
@@ -1840,19 +2112,29 @@ export async function getStockUsageReport(from: string, to: string): Promise<Sto
 export async function getStockPurchaseSaleReport(
   from: string,
   to: string,
-): Promise<StockPurchaseSaleRow[]> {
-  const q = new URLSearchParams({ from, to })
-  return api<StockPurchaseSaleRow[]>(`/api/reports/stock-purchase-sale?${q}`)
+  groupBy: StockPurchaseSaleGroupBy = 'product',
+): Promise<StockPurchaseSaleRow[] | StockPurchaseSaleVehicleRow[] | StockPurchaseSaleSupplierRow[]> {
+  const q = new URLSearchParams({ from, to, groupBy })
+  return api(`/api/reports/stock-purchase-sale?${q}`)
 }
 
 export async function getStockMovementDetail(
   stockProductId: string | null | undefined,
-  name: string,
+  name: string | null | undefined,
   from: string,
   to: string,
+  opts?: {
+    vehicleId?: string | null
+    supplierId?: string | null
+    source?: string | null
+  },
 ): Promise<StockMovementDetail[]> {
-  const q = new URLSearchParams({ name, from, to })
+  const q = new URLSearchParams({ from, to })
+  if (name) q.set('name', name)
   if (stockProductId) q.set('stockProductId', stockProductId)
+  if (opts?.vehicleId) q.set('vehicleId', opts.vehicleId)
+  if (opts?.supplierId) q.set('supplierId', opts.supplierId)
+  if (opts?.source) q.set('source', opts.source)
   return api<StockMovementDetail[]>(`/api/reports/stock-movements?${q}`)
 }
 
@@ -1872,5 +2154,22 @@ export async function getCustomerLedgerDetail(
 
 export async function getSalesReport(from: string, to: string): Promise<SalesReport> {
   const q = new URLSearchParams({ from, to })
-  return api<SalesReport>(`/api/reports/sales?${q}`)
+  const d = await api<SalesReport & {
+    topJobs?: TopServiceRow[]
+    topParts?: TopPartRow[]
+  }>(`/api/reports/sales?${q}`)
+  return {
+    ...d,
+    topServices: d.topServices ?? [],
+    topJobs: (d.topJobs ?? []).map((j) => ({
+      title: j.title,
+      count: Number(j.count),
+      totalAmount: Number(j.totalAmount),
+    })),
+    topParts: (d.topParts ?? []).map((p) => ({
+      name: p.name,
+      quantity: Number(p.quantity),
+      totalAmount: Number(p.totalAmount),
+    })),
+  }
 }

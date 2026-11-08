@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using OtoServis.Admin.Filters;
 using OtoServis.Admin.Services;
 
@@ -9,6 +10,13 @@ namespace OtoServis.Admin.Controllers;
 [RequireShop]
 public class ReportsController(AdminDataService data) : Controller
 {
+    public override void OnActionExecuting(ActionExecutingContext context)
+    {
+        base.OnActionExecuting(context);
+        if (User.GetShopRole() == "personel")
+            context.Result = RedirectToAction("Index", "Dashboard");
+    }
+
     public async Task<IActionResult> Index()
     {
         var model = await data.GetReportsHubAsync();

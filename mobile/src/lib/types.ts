@@ -88,6 +88,12 @@ export interface ProductItem {
   returnedAt?: string
   /** Stok kataloğundan seçildiyse — sadece ekleme sırasında kullanılır (stok düşümü için). */
   stockProductId?: string
+  /** PDF akışı: faturadaki orijinal tedarikçi kodu (alias öğrenme için; stok düşmez). */
+  supplierCode?: string
+  /** PDF akışı: eşleştirilen stok ürünü (stok düşmeden alias ilişkisi için). */
+  matchedStockProductId?: string
+  manufacturerCode?: string
+  brand?: string
 }
 
 export interface Supplier {
@@ -101,7 +107,15 @@ export interface Supplier {
   balance: number
 }
 
-export type StockCategory = 'yag' | 'filtre' | 'fren' | 'lastik' | 'elektrik' | 'diger'
+export type StockCategory =
+  | 'yag'
+  | 'filtre'
+  | 'fren'
+  | 'lastik'
+  | 'elektrik'
+  | 'motor'
+  | 'mekanik'
+  | 'diger'
 
 export interface StockProduct {
   id: string
@@ -119,6 +133,8 @@ export const STOCK_CATEGORY_LABELS: Record<StockCategory, string> = {
   fren: 'Fren',
   lastik: 'Lastik',
   elektrik: 'Elektrik',
+  motor: 'Motor',
+  mekanik: 'Mekanik',
   diger: 'Diğer',
 }
 
@@ -141,6 +157,8 @@ export interface Vehicle {
   createdAt: string
   startedAt?: string
   closedAt?: string
+  /** Aynı araç için bu iş emrinin kaçıncı servis kaydı (1, 2, 3…). */
+  visitNumber?: number
   laborTotal?: number
   partsTotal?: number
   discount?: number

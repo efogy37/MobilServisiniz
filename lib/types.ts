@@ -26,7 +26,15 @@ export interface ProductItem {
   price: number
 }
 
-export type StockCategory = 'yag' | 'filtre' | 'fren' | 'lastik' | 'elektrik' | 'diger'
+export type StockCategory =
+  | 'yag'
+  | 'filtre'
+  | 'fren'
+  | 'lastik'
+  | 'elektrik'
+  | 'motor'
+  | 'mekanik'
+  | 'diger'
 
 export interface StockProduct {
   id: string
@@ -43,6 +51,8 @@ export const STOCK_CATEGORY_LABELS: Record<StockCategory, string> = {
   fren: 'Fren',
   lastik: 'Lastik',
   elektrik: 'Elektrik',
+  motor: 'Motor',
+  mekanik: 'Mekanik',
   diger: 'Diğer',
 }
 

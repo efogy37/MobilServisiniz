@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { User, Lock, Eye, EyeOff, Check } from 'lucide-react-native'
 import { cn } from '@/lib/utils'
 import { colors, withAlpha } from '@/lib/theme'
+import { useDesktopLayout } from '@/components/app-shell'
 import {
   clearRememberedLogin,
   getRememberedLogin,
@@ -27,6 +28,7 @@ export function Login({
   onLogin: (identifier: string, password: string) => Promise<AuthResult>
 }) {
   const insets = useSafeAreaInsets()
+  const desktop = useDesktopLayout()
   const [identifier, setIdentifier] = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
@@ -85,21 +87,8 @@ export function Login({
     }
   }
 
-  return (
-    <KeyboardAvoidingView
-      className="flex-1 bg-primary"
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ScrollView
-        contentContainerStyle={{
-          flexGrow: 1,
-          paddingTop: insets.top + 40,
-          paddingBottom: insets.bottom + 24,
-          paddingHorizontal: 24,
-        }}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View className="flex-1">
+  const form = (
+        <>
           <View className="items-center">
             <View className="overflow-hidden rounded-[28px]" style={logoBox}>
               <Image
@@ -228,7 +217,35 @@ export function Login({
               </View>
             ) : null}
           </View>
-        </View>
+        </>
+  )
+
+  if (desktop) {
+    return (
+      <View
+        className="flex-1 bg-primary"
+        style={{ flex: 1, overflow: 'hidden', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 }}
+      >
+        <View style={{ maxWidth: 440, width: '100%' }}>{form}</View>
+      </View>
+    )
+  }
+
+  return (
+    <KeyboardAvoidingView
+      className="flex-1 bg-primary"
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingTop: insets.top + 40,
+          paddingBottom: insets.bottom + 24,
+          paddingHorizontal: 24,
+        }}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View className="flex-1">{form}</View>
       </ScrollView>
     </KeyboardAvoidingView>
   )

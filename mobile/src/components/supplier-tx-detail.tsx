@@ -25,18 +25,45 @@ export function isSupplierCredit(type: string) {
   return type === 'odeme' || type === 'iade' || type === 'iskonto'
 }
 
+export function vehicleLabel(t: Pick<SupplierTransaction, 'brand' | 'model'>): string | undefined {
+  const brand = t.brand?.trim()
+  const model = t.model?.trim()
+  if (brand && model) return `${brand} ${model}`
+  return brand || model || undefined
+}
+
+/** Bağlı ödeme izi (pid:…) kullanıcıya gösterilmez; DB'de kalır. */
+export function formatSupplierDescription(description?: string | null): string | undefined {
+  if (!description) return undefined
+  const cleaned = description
+    .replace(/\s*[·•|-]?\s*pid:[0-9a-fA-F-]{36}\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s*[·•|-]\s*$/g, '')
+    .trim()
+  return cleaned || undefined
+}
+
 export function supplierTxSubtitle(t: SupplierTransaction): string | undefined {
   if (t.partName) {
     const qty = t.partQuantity && t.partQuantity > 1 ? `${t.partQuantity}× ` : ''
     const plate = t.plate ? ` · ${t.plate}` : ''
-    return `${qty}${t.partName}${plate}`
+    const vehicle = vehicleLabel(t)
+    const vehiclePart = vehicle ? ` · ${vehicle}` : ''
+    return `${qty}${t.partName}${plate}${vehiclePart}`
   }
-  return t.description?.trim() || undefined
+  return formatSupplierDescription(t.description)
 }
 
 export type SupplierTxRow =
   | { kind: 'single'; tx: SupplierTransaction }
-  | { kind: 'plate'; plate: string; items: SupplierTransaction[]; net: number }
+  | {
+      kind: 'plate'
+      plate: string
+      brand?: string | null
+      model?: string | null
+      items: SupplierTransaction[]
+      net: number
+    }
 
 export type SupplierTxDateGroup = {
   dateKey: string
@@ -61,10 +88,19 @@ function buildSupplierTxRows(items: SupplierTransaction[]): SupplierTxRow[] {
         if (row.kind === 'plate') {
           row.items.push(t)
           row.net += signed
+          if (!row.brand?.trim() && t.brand?.trim()) row.brand = t.brand
+          if (!row.model?.trim() && t.model?.trim()) row.model = t.model
         }
       } else {
         plateIndex.set(plate, rows.length)
-        rows.push({ kind: 'plate', plate, items: [t], net: signed })
+        rows.push({
+          kind: 'plate',
+          plate,
+          brand: t.brand,
+          model: t.model,
+          items: [t],
+          net: signed,
+        })
       }
     } else {
       rows.push({ kind: 'single', tx: t })
@@ -136,6 +172,8 @@ export function SupplierTxGroupedList({
                 <PlateGroupRow
                   key={`plate-${row.plate}-${row.items[0]?.id}`}
                   plate={row.plate}
+                  brand={row.brand}
+                  model={row.model}
                   items={row.items}
                   net={row.net}
                   onPress={onPress}
@@ -210,12 +248,16 @@ function SingleTxRow({
 /** Aynı tarih + plaka için birden çok kalem varsa özet satır; dokununca kalem kalem detay açılır. */
 function PlateGroupRow({
   plate,
+  brand,
+  model,
   items,
   net,
   onPress,
   compact,
 }: {
   plate: string
+  brand?: string | null
+  model?: string | null
   items: SupplierTransaction[]
   net: number
   onPress: (tx: SupplierTransaction) => void
@@ -223,9 +265,58 @@ function PlateGroupRow({
 }) {
   const [expanded, setExpanded] = useState(false)
   const credit = net < 0
+  const vehicle =
+    vehicleLabel({ brand, model }) ??
+    vehicleLabel(items.find((t) => t.brand?.trim() || t.model?.trim()) ?? {})
 
+  // Tek kalemde de plaka + marka/model başlıkta kalsın (eski davranış: Alış satırı)
   if (items.length === 1) {
-    return <SingleTxRow tx={items[0]} onPress={onPress} compact={compact} />
+    const tx = items[0]
+    const sub = supplierTxSubtitle(tx)
+    const titleVehicle = vehicleLabel(tx) ?? vehicle
+    return (
+      <Pressable
+        onPress={() => onPress(tx)}
+        className={
+          compact
+            ? 'flex-row items-center justify-between rounded-2xl border border-border bg-background px-3 py-3 active:opacity-90'
+            : 'flex-row items-center justify-between rounded-2xl border border-border bg-card p-3.5 active:opacity-90'
+        }
+        style={compact ? undefined : cardShadow}
+      >
+        <View className="min-w-0 flex-1 flex-row items-center gap-2.5">
+          <View className="h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
+            <CarFront size={16} color={colors.primary} />
+          </View>
+          <View className="min-w-0 flex-1">
+            <Text className="text-sm font-bold text-foreground" numberOfLines={1}>
+              {plate}
+              {titleVehicle ? ` · ${titleVehicle}` : ''}
+            </Text>
+            {sub ? (
+              <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={2}>
+                {sub}
+              </Text>
+            ) : (
+              <Text className="mt-0.5 text-xs text-muted-foreground">{formatTime(tx.createdAt)}</Text>
+            )}
+          </View>
+        </View>
+        <View className="ml-2 flex-row items-center gap-1">
+          <Text
+            className={
+              isSupplierCredit(tx.type)
+                ? 'text-base font-extrabold text-chart-4'
+                : 'text-base font-extrabold text-destructive'
+            }
+          >
+            {isSupplierCredit(tx.type) ? '-' : '+'}
+            {formatCurrency(tx.amount)}
+          </Text>
+          {!compact ? <ChevronRight size={16} color={colors.mutedForeground} /> : null}
+        </View>
+      </Pressable>
+    )
   }
 
   return (
@@ -246,6 +337,7 @@ function PlateGroupRow({
           <View className="min-w-0 flex-1">
             <Text className="text-sm font-bold text-foreground" numberOfLines={1}>
               {plate}
+              {vehicle ? ` · ${vehicle}` : ''}
             </Text>
             <Text className="mt-0.5 text-xs text-muted-foreground">
               {items.length} kalem · kalemler için dokun
@@ -335,6 +427,7 @@ export function SupplierTxDetailSheet({
   const credit = tx ? isSupplierCredit(tx.type) : false
   const editable = tx ? tx.type === 'odeme' || tx.type === 'iskonto' : false
   const title = tx ? SUPPLIER_TX_LABELS[tx.type] ?? tx.type : ''
+  const description = tx ? formatSupplierDescription(tx.description) : undefined
 
   return (
     <AppSheet
@@ -366,7 +459,12 @@ export function SupplierTxDetailSheet({
           value={SUPPLIER_METHOD_LABELS[tx.method] ?? tx.method}
         />
       ) : null}
-      {tx.plate ? <DetailRow label="Plaka" value={tx.plate} /> : null}
+      {tx.plate ? (
+        <DetailRow
+          label="Plaka"
+          value={vehicleLabel(tx) ? `${tx.plate} · ${vehicleLabel(tx)}` : tx.plate}
+        />
+      ) : null}
       {tx.partName ? <DetailRow label="Parça" value={tx.partName} /> : null}
       {tx.partQuantity != null && tx.partQuantity > 0 ? (
         <DetailRow label="Adet" value={String(tx.partQuantity)} />
@@ -374,7 +472,7 @@ export function SupplierTxDetailSheet({
       {tx.purchasePrice != null && tx.purchasePrice > 0 ? (
         <DetailRow label="Birim alış" value={formatCurrency(tx.purchasePrice)} />
       ) : null}
-      {tx.description ? <DetailRow label="Açıklama" value={tx.description} /> : null}
+      {description ? <DetailRow label="Açıklama" value={description} /> : null}
 
       {editable && (onEdit || onDelete) ? (
         <View className="mt-4 flex-row gap-2">

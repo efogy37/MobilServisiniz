@@ -1,5 +1,5 @@
 # Mobil uygulama web sitesi: https://app.mobilservisiniz.com
-# Dosyalar once {BaseDir}\web altina kopyalanmis olmali.
+# Dosyalar once {BaseDir}\app altina kopyalanmis olmali.
 # Yonetici PowerShell:
 #   .\05-Create-Web-Site.ps1
 #   .\05-Create-Web-Site.ps1 -BaseDir "D:\YeniKok"
@@ -11,14 +11,14 @@ param(
 $ErrorActionPreference = "Stop"
 Import-Module WebAdministration
 
-if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\inetpub\wwwroot\mobilservisiniz" } }
 
 $hostname = "app.mobilservisiniz.com"
 $siteName = "OtoServis-Web"
 $poolName = "OtoServisWebPool"
-$path = Join-Path $BaseDir "web"
+$path = Join-Path $BaseDir "app"
 
-if (-not (Test-Path $path)) { throw "Klasor yok: $path  Once publish\web icerigini buraya kopyalayin." }
+if (-not (Test-Path $path)) { throw "Klasor yok: $path  Once publish\web icerigini app klasorune kopyalayin." }
 if (-not (Test-Path (Join-Path $path "index.html"))) { throw "index.html yok: $path" }
 
 if (-not (Test-Path "IIS:\AppPools\$poolName")) {

@@ -243,6 +243,7 @@ export function ServiceApp() {
   const [catalog, setCatalog] = useState<UiCatalogItem[]>([])
 
   const [view, setView] = useState<View_>('dashboard')
+  const [detailReturnView, setDetailReturnView] = useState<View_>('vehicles')
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
@@ -261,6 +262,7 @@ export function ServiceApp() {
   const [suppliers, setSuppliers] = useState<Supplier[]>([])
 
   const [vehicleListFilter, setVehicleListFilter] = useState<VehicleListFilter>('all')
+  const canSeeReports = currentUser?.role === 'admin' || currentUser?.role === 'usta'
 
   const [logoutOpen, setLogoutOpen] = useState(false)
 
@@ -399,7 +401,11 @@ export function ServiceApp() {
 
   }, [])
 
-
+  useEffect(() => {
+    if (canSeeReports) return
+    if (view === 'stockReports') setView('products')
+    if (view === 'supplierReport') setView('customers')
+  }, [canSeeReports, view])
 
   // Android donanım geri tuşu: uygulamadan çıkmak yerine, o ekrandaki
   // "geri" butonuyla aynı hedefe döner (üst seviye görünüm geçmişi yoktur,
@@ -410,7 +416,9 @@ export function ServiceApp() {
 
       if (view === 'detail') {
 
-        setView('vehicles')
+        setView(detailReturnView === 'customerDetail' || detailReturnView === 'dashboard'
+          ? detailReturnView
+          : 'vehicles')
 
         return true
 
@@ -454,7 +462,7 @@ export function ServiceApp() {
 
     return () => sub.remove()
 
-  }, [view])
+  }, [view, detailReturnView])
 
 
 
@@ -513,12 +521,22 @@ export function ServiceApp() {
 
 
 
-  function openVehicle(id: string) {
-
+  async function openVehicle(id: string) {
+    setDetailReturnView(
+      view === 'customerDetail' ? 'customerDetail' : view === 'dashboard' ? 'dashboard' : 'vehicles',
+    )
+    const v = vehicles.find((x) => x.id === id)
     setSelectedId(id)
-
     setView('detail')
-
+    // Liste özet gelir; detay (işçilik/parça) iş emri yenilemesiyle dolar
+    if (!v?.workOrderId) return
+    try {
+      const fresh = await refreshVehicle(v.workOrderId)
+      await replaceVehicle(fresh)
+      setSelectedId(fresh.id || id)
+    } catch (e) {
+      reportError(e)
+    }
   }
 
 
@@ -556,6 +574,9 @@ export function ServiceApp() {
   }
 
   async function openPendingWorkOrder(workOrderId: string, vehicleId: string) {
+    setDetailReturnView(
+      view === 'customerDetail' ? 'customerDetail' : view === 'dashboard' ? 'dashboard' : 'vehicles',
+    )
     setBusy(true)
     try {
       const fresh = await refreshVehicle(workOrderId)
@@ -635,6 +656,9 @@ export function ServiceApp() {
 
 
 
+      const openedAt =
+        /^\d{4}-\d{2}-\d{2}$/.test(vehicle.createdAt) ? vehicle.createdAt : undefined
+
       const created = await createVehicleApi(
 
         resolvedCustomerId,
@@ -662,6 +686,8 @@ export function ServiceApp() {
         vehicle.complaints[0]?.text,
 
         vehicle.complaints[0]?.category,
+
+        openedAt,
 
       )
 
@@ -843,7 +869,12 @@ export function ServiceApp() {
 
 
 
-  async function openNewVisitForVehicle(id: string, complaint?: string, complaintCategory?: import("@/lib/types").ComplaintCategory) {
+  async function openNewVisitForVehicle(
+    id: string,
+    complaint?: string,
+    complaintCategory?: import("@/lib/types").ComplaintCategory,
+    openedAt?: string,
+  ) {
 
     const v = vehicles.find((x) => x.id === id)
 
@@ -853,7 +884,7 @@ export function ServiceApp() {
 
     try {
 
-      const fresh = await openNewVisit(v.id, complaint, complaintCategory)
+      const fresh = await openNewVisit(v.id, complaint, complaintCategory, openedAt)
 
       await replaceVehicle(fresh)
 
@@ -1178,7 +1209,12 @@ export function ServiceApp() {
 
   const shellOnBack =
     view === 'detail'
-      ? () => setView('vehicles')
+      ? () =>
+          setView(
+            detailReturnView === 'customerDetail' || detailReturnView === 'dashboard'
+              ? detailReturnView
+              : 'vehicles',
+          )
       : view === 'customerDetail' || view === 'supplierReport'
         ? () => setView('customers')
         : view === 'supplierImport' || view === 'stockReports'
@@ -1221,6 +1257,8 @@ export function ServiceApp() {
         activeTab={activeTab}
         onNavigate={handleNav}
         showStock={entitlements?.features.stock !== false}
+        shopLabel={shopLabel || undefined}
+        onLogout={handleLogout}
       >
         {view === 'dashboard' && (
           <Dashboard
@@ -1261,7 +1299,7 @@ export function ServiceApp() {
             onAdd={addCustomer}
             onUpdate={updateCustomer}
             onOpenCustomer={openCustomer}
-            onOpenReport={() => setView('supplierReport')}
+            onOpenReport={canSeeReports ? () => setView('supplierReport') : undefined}
             onRefresh={reloadAll}
             allowSuppliers={entitlements?.features.suppliers !== false}
           />
@@ -1273,6 +1311,7 @@ export function ServiceApp() {
             onBack={() => setView('customers')}
             onUpdate={updateCustomer}
             onOpenVehicle={openVehicle}
+            onOpenWorkOrder={openPendingWorkOrder}
             onChanged={reloadSuppliers}
             allowSuppliers={entitlements?.features.suppliers !== false}
           />
@@ -1286,7 +1325,7 @@ export function ServiceApp() {
             onDelete={deleteStockItem}
             onRefresh={reloadAll}
             onImportPurchase={() => setView('supplierImport')}
-            onOpenReports={() => setView('stockReports')}
+            onOpenReports={canSeeReports ? () => setView('stockReports') : undefined}
           />
         )}
 
@@ -1300,11 +1339,11 @@ export function ServiceApp() {
           />
         )}
 
-        {view === 'stockReports' && (
+        {view === 'stockReports' && canSeeReports && (
           <StockReports onBack={() => setView('products')} />
         )}
 
-        {view === 'supplierReport' && entitlements?.features.suppliers !== false && (
+        {view === 'supplierReport' && canSeeReports && entitlements?.features.suppliers !== false && (
           <SupplierReport onBack={() => setView('customers')} />
         )}
 
@@ -1332,7 +1371,9 @@ export function ServiceApp() {
             }
             onDeletePayment={(paymentId) => deletePayment(selected.id, paymentId)}
             onUpdateDiscount={(amount) => updateDiscount(selected.id, amount)}
-            onOpenNewVisit={(complaint) => openNewVisitForVehicle(selected.id, complaint)}
+            onOpenNewVisit={(complaint, openedAt) =>
+              openNewVisitForVehicle(selected.id, complaint, undefined, openedAt)
+            }
             onDeleteWaiting={() => deleteWaitingVehicle(selected.id)}
             onUpdateVehicle={(data, opts) => updateVehicle(selected.id, data, opts)}
           />

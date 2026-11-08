@@ -13,8 +13,8 @@
 
 **SQL Server:** `31.57.33.85` / `OtoServis` / `otoservis_api`
 
-**Fotoğraf klasörü:** API `appsettings.json` / `appsettings.Production.json` içinde `Storage:UploadsPath`.
-Yeni sunucuda örneğin `"UploadsPath": "D:\\\\YeniKok\\\\api\\\\wwwroot\\\\uploads"` yazın; IIS App Pool’un o klasöre yazma izni olmalı.
+**Kurulum / fotoğraf kökü:** `"Storage": { "Root": "C:\\\\inetpub\\\\wwwroot\\\\mobilservisiniz" }`.
+Fotoğraflar `{Root}\\api\\wwwroot\\uploads`. Web (PWA) klasörü `{Root}\\app`.
 
 ---
 
@@ -71,14 +71,15 @@ New-NetFirewallRule -DisplayName "OtoServis Platform 5282" -Direction Inbound -P
 
 ## 3. Sunucuya kopyalama (RDP ile)
 
-1. Zip + SQL dosyalarını `C:\OtoServis\` altına kopyalayın
+1. Zip + SQL dosyalarını `C:\inetpub\wwwroot\mobilservisiniz\` altına kopyalayın
 2. PowerShell:
 
 ```powershell
-New-Item -ItemType Directory -Force C:\OtoServis\api, C:\OtoServis\admin, C:\OtoServis\platform
-Expand-Archive C:\OtoServis\OtoServis-Api.zip -DestinationPath C:\OtoServis\api -Force
-Expand-Archive C:\OtoServis\OtoServis-Admin.zip -DestinationPath C:\OtoServis\admin -Force
-Expand-Archive C:\OtoServis\OtoServis-Platform.zip -DestinationPath C:\OtoServis\platform -Force
+$root = "C:\inetpub\wwwroot\mobilservisiniz"
+Expand-Archive "$root\OtoServis-Api.zip" -DestinationPath "$root\api" -Force
+Expand-Archive "$root\OtoServis-Admin.zip" -DestinationPath "$root\admin" -Force
+Expand-Archive "$root\OtoServis-Platform.zip" -DestinationPath "$root\platform" -Force
+Expand-Archive "$root\OtoServis-Web.zip" -DestinationPath "$root\app" -Force
 ```
 
 ---
@@ -88,7 +89,7 @@ Expand-Archive C:\OtoServis\OtoServis-Platform.zip -DestinationPath C:\OtoServis
 IIS kurulumu yapıldıysa (bkz. `publish\iis-setup\`), dosyaları güncelledikten sonra sadece:
 
 ```powershell
-C:\OtoServis\iis-setup\Restart-OtoServis.ps1
+C:\inetpub\wwwroot\mobilservisiniz\iis-setup\Restart-OtoServis.ps1
 ```
 
 çalıştırmanız yeterli — IIS App Pool'larını algılayıp onları yeniden başlatır. IIS henüz

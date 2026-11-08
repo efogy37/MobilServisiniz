@@ -11,21 +11,21 @@ domain + IIS'e taşımak için sırayla çalıştırılır. Detaylı plan: proje
    script yok. Sonunda elinizde `cf-origin.pfx` + parola olacak.
 
 2. **RDP ile sunucuya bağlanın**, `cf-origin.pfx` dosyasını kurulum köküne (varsayılan
-   `C:\OtoServis`, yeni sunucuda `-BaseDir` / `OTOSERVIS_BASE_DIR`) kopyalayın; bu klasörün
+   `C:\inetpub\wwwroot\mobilservisiniz`) kopyalayın; bu klasörün
    tamamını (`publish\iis-setup\*`) `{kök}\iis-setup\` altına koyun.
 
 3. **01-Install-HostingBundle.ps1** — Yönetici PowerShell'de çalıştırın. IIS rolünü, .NET 8
    ASP.NET Core Hosting Bundle'ı ve URL Rewrite modülünü kurar.
 
    ```powershell
-   cd C:\OtoServis\iis-setup
+   cd C:\inetpub\wwwroot\mobilservisiniz\iis-setup
    .\01-Install-HostingBundle.ps1
    ```
 
 4. **02-Create-Sites.ps1** — App Pool + Site + binding'leri oluşturur, sertifikayı içe aktarır.
 
    ```powershell
-   .\02-Create-Sites.ps1 -DomainRoot "mobilservisiniz.com" -PfxPath "C:\OtoServis\cf-origin.pfx" -PfxPassword "<pfx-parolaniz>"
+   .\02-Create-Sites.ps1 -DomainRoot "mobilservisiniz.com" -PfxPath "C:\inetpub\wwwroot\mobilservisiniz\cf-origin.pfx" -PfxPassword "<pfx-parolaniz>"
    ```
 
    Bu adımda eski `dotnet X.dll` süreçleri hâlâ 5280/5281/5282'yi kullandığından, script

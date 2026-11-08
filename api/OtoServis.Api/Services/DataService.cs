@@ -87,6 +87,72 @@ public class DataService(
         return rows.ToList();
     }
 
+    public async Task<VehicleServiceHistoryDto?> GetVehicleServiceHistoryAsync(Guid vehicleId)
+    {
+        var shopId = tenant.RequireShopId();
+        await using var conn = await tenant.OpenAsync();
+
+        var vehicle = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            @"SELECT id AS Id, plate AS Plate, brand AS Brand, model AS Model
+              FROM dbo.vehicles
+              WHERE id = @vehicleId AND shop_id = @shopId AND is_active = 1",
+            new { vehicleId, shopId });
+        if (vehicle is null) return null;
+
+        var visits = (await conn.QueryAsync<dynamic>(
+            @"SELECT wo.id AS WorkOrderId, wo.order_no AS OrderNo, wo.status AS Status,
+                     wo.opened_at AS OpenedAt,
+                     CAST(ROW_NUMBER() OVER (
+                         ORDER BY wo.opened_at ASC, wo.order_no ASC
+                     ) AS int) AS VisitNumber
+              FROM dbo.work_orders wo
+              WHERE wo.shop_id = @shopId AND wo.vehicle_id = @vehicleId
+              ORDER BY wo.opened_at DESC, wo.order_no DESC",
+            new { shopId, vehicleId })).ToList();
+
+        if (visits.Count == 0)
+        {
+            return new VehicleServiceHistoryDto(
+                (Guid)vehicle.Id, (string)vehicle.Plate, (string)vehicle.Brand, (string)vehicle.Model,
+                Array.Empty<VehicleVisitHistoryDto>());
+        }
+
+        var woIds = visits.Select(v => (Guid)v.WorkOrderId).ToList();
+        var services = (await conn.QueryAsync<(Guid WorkOrderId, Guid Id, string Title, decimal Price)>(
+            @"SELECT work_order_id AS WorkOrderId, id AS Id, title AS Title, price AS Price
+              FROM dbo.services
+              WHERE shop_id = @shopId AND work_order_id IN @woIds
+              ORDER BY created_at ASC",
+            new { shopId, woIds })).ToList();
+        var parts = (await conn.QueryAsync<(Guid WorkOrderId, Guid Id, string Name, int Quantity, decimal UnitPrice)>(
+            @"SELECT work_order_id AS WorkOrderId, id AS Id, name AS Name,
+                     quantity AS Quantity, unit_price AS UnitPrice
+              FROM dbo.work_order_parts
+              WHERE shop_id = @shopId AND work_order_id IN @woIds
+              ORDER BY created_at ASC",
+            new { shopId, woIds })).ToList();
+
+        var servicesByWo = services.ToLookup(s => s.WorkOrderId);
+        var partsByWo = parts.ToLookup(p => p.WorkOrderId);
+
+        var visitDtos = visits.Select(v =>
+        {
+            var woId = (Guid)v.WorkOrderId;
+            return new VehicleVisitHistoryDto(
+                woId,
+                (long)v.OrderNo,
+                (string)v.Status,
+                (DateTime)v.OpenedAt,
+                Convert.ToInt32(v.VisitNumber),
+                servicesByWo[woId].Select(s => new ServiceLineDto(s.Id, s.Title, s.Price)).ToList(),
+                partsByWo[woId].Select(p => new VehicleHistoryPartDto(p.Id, p.Name, p.Quantity, p.UnitPrice)).ToList());
+        }).ToList();
+
+        return new VehicleServiceHistoryDto(
+            (Guid)vehicle.Id, (string)vehicle.Plate, (string)vehicle.Brand, (string)vehicle.Model,
+            visitDtos);
+    }
+
     public async Task<DashboardDto?> GetDashboardAsync()
     {
         var shopId = tenant.RequireShopId();
@@ -212,6 +278,43 @@ public class DataService(
 
     private static string NormalizePlate(string plate) => plate.Trim().ToUpperInvariant().Replace(" ", "");
 
+    /// <summary>
+    /// İstemciden gelen geliş tarihini UTC'ye çevirir (TR günü 12:00).
+    /// Gelecek ve 1 yıldan eski tarihler reddedilir. null → UtcNow.
+    /// </summary>
+    private static DateTime ResolveOpenedAtUtc(DateTime? requested)
+    {
+        var now = DateTime.UtcNow;
+        if (requested is null) return now;
+
+        var raw = requested.Value;
+        DateOnly day = raw.Kind switch
+        {
+            DateTimeKind.Utc => DateOnly.FromDateTime(raw.AddHours(3)),
+            DateTimeKind.Local => DateOnly.FromDateTime(raw.ToUniversalTime().AddHours(3)),
+            _ => DateOnly.FromDateTime(raw), // Unspecified: TR takvim günü
+        };
+
+        var todayTr = DateOnly.FromDateTime(now.AddHours(3));
+        if (day > todayTr)
+            throw new ArgumentException("Geliş tarihi gelecekte olamaz.");
+        if (day < todayTr.AddDays(-365))
+            throw new ArgumentException("Geliş tarihi en fazla 1 yıl geriye alınabilir.");
+
+        // TR 12:00 → UTC 09:00
+        return day.ToDateTime(new TimeOnly(12, 0)).AddHours(-3);
+    }
+
+    private static bool IsBackdatedOpenedAt(DateTime openedAtUtc)
+    {
+        var openedDay = DateOnly.FromDateTime(openedAtUtc.AddHours(3));
+        var todayTr = DateOnly.FromDateTime(DateTime.UtcNow.AddHours(3));
+        return openedDay < todayTr;
+    }
+
+    private static DateTime EventStampForWorkOrder(DateTime openedAtUtc)
+        => IsBackdatedOpenedAt(openedAtUtc) ? openedAtUtc : DateTime.UtcNow;
+
     private static readonly HashSet<string> FuelCodes = ["benzin", "dizel", "lpg", "elektrik", "hibrit", "diger"];
 
     private static string NormalizeFuel(string? fuel)
@@ -260,9 +363,10 @@ public class DataService(
     {
         var shopId = tenant.RequireShopId();
         await plans.EnsureWorkOrderQuotaAsync();
-        var vehicleId = Guid.NewGuid();
-        var now = DateTime.UtcNow;
+        var now = ResolveOpenedAtUtc(req.OpenedAt);
         var plateNorm = NormalizePlate(req.Plate);
+        var plate = req.Plate.Trim().ToUpperInvariant();
+        var chassisNo = req.ChassisNo?.Trim().ToUpperInvariant();
 
         await using var conn = await tenant.OpenAsync();
 
@@ -270,30 +374,79 @@ public class DataService(
         if (conflict is not null && conflict.CustomerId != req.CustomerId)
             throw new VehiclePlateConflictException(conflict);
 
+        // Aynı plakalı silinmiş (is_active=0) kayıt varsa yeniden canlandır; geçmiş iş emirleri kalsın.
+        var inactiveId = await conn.ExecuteScalarAsync<Guid?>(
+            @"SELECT TOP 1 id FROM dbo.vehicles
+              WHERE shop_id = @shopId AND plate_norm = @plateNorm AND is_active = 0
+              ORDER BY updated_at DESC",
+            new { shopId, plateNorm });
+
+        var vehicleId = inactiveId ?? Guid.NewGuid();
+        var reactivated = inactiveId.HasValue;
+
         await using var tx = await conn.BeginTransactionAsync();
         Guid woId;
         try
         {
-            await conn.ExecuteAsync(
-                @"INSERT INTO dbo.vehicles (id, shop_id, customer_id, plate, brand, model, model_year, color, fuel, chassis_no, engine_no, engine_volume, mileage)
-                  VALUES (@vehicleId, @shopId, @CustomerId, @Plate, @Brand, @Model, @ModelYear, @Color, @Fuel, @ChassisNo, @EngineNo, @EngineVolume, @Mileage)",
-                new
-                {
-                    vehicleId,
-                    shopId,
-                    req.CustomerId,
-                    Plate = req.Plate.Trim().ToUpperInvariant(),
-                    req.Brand,
-                    req.Model,
-                    req.ModelYear,
-                    req.Color,
-                    req.Fuel,
-                    ChassisNo = req.ChassisNo?.Trim().ToUpperInvariant(),
-                    req.EngineNo,
-                    req.EngineVolume,
-                    req.Mileage,
-                },
-                tx);
+            if (reactivated)
+            {
+                await conn.ExecuteAsync(
+                    @"UPDATE dbo.vehicles
+                      SET is_active = 1,
+                          customer_id = @CustomerId,
+                          plate = @Plate,
+                          brand = @Brand,
+                          model = @Model,
+                          model_year = @ModelYear,
+                          color = @Color,
+                          fuel = @Fuel,
+                          chassis_no = @ChassisNo,
+                          engine_no = @EngineNo,
+                          engine_volume = @EngineVolume,
+                          mileage = @Mileage,
+                          updated_at = SYSUTCDATETIME()
+                      WHERE id = @vehicleId AND shop_id = @shopId",
+                    new
+                    {
+                        vehicleId,
+                        shopId,
+                        req.CustomerId,
+                        Plate = plate,
+                        req.Brand,
+                        req.Model,
+                        req.ModelYear,
+                        req.Color,
+                        req.Fuel,
+                        ChassisNo = chassisNo,
+                        req.EngineNo,
+                        req.EngineVolume,
+                        req.Mileage,
+                    },
+                    tx);
+            }
+            else
+            {
+                await conn.ExecuteAsync(
+                    @"INSERT INTO dbo.vehicles (id, shop_id, customer_id, plate, brand, model, model_year, color, fuel, chassis_no, engine_no, engine_volume, mileage)
+                      VALUES (@vehicleId, @shopId, @CustomerId, @Plate, @Brand, @Model, @ModelYear, @Color, @Fuel, @ChassisNo, @EngineNo, @EngineVolume, @Mileage)",
+                    new
+                    {
+                        vehicleId,
+                        shopId,
+                        req.CustomerId,
+                        Plate = plate,
+                        req.Brand,
+                        req.Model,
+                        req.ModelYear,
+                        req.Color,
+                        req.Fuel,
+                        ChassisNo = chassisNo,
+                        req.EngineNo,
+                        req.EngineVolume,
+                        req.Mileage,
+                    },
+                    tx);
+            }
 
             var orderNo = await conn.ExecuteScalarAsync<long>(
                 "DECLARE @n bigint; EXEC dbo.usp_NextTenantCounter @shopId, N'work_order_no', @n OUTPUT; SELECT @n",
@@ -328,8 +481,10 @@ public class DataService(
         var vehicle = (await GetVehiclesAsync()).FirstOrDefault(v => v.Id == vehicleId);
 
         await ActivityLogService.LogAsync(
-            conn, shopId, userId, "created", "vehicle", vehicleId,
-            $"Araç eklendi: {req.Plate.Trim().ToUpperInvariant()} ({req.Brand} {req.Model}) — yeni iş emri açıldı",
+            conn, shopId, userId, reactivated ? "reactivated" : "created", "vehicle", vehicleId,
+            reactivated
+                ? $"Silinmiş araç yeniden kaydedildi: {plate} ({req.Brand} {req.Model}) — yeni iş emri açıldı"
+                : $"Araç eklendi: {plate} ({req.Brand} {req.Model}) — yeni iş emri açıldı",
             customerId: req.CustomerId, vehicleId: vehicleId);
 
         return vehicle is null ? null : new CreateVehicleResponse(vehicleId, woId, vehicle);
@@ -521,15 +676,22 @@ public class DataService(
         await plans.RequireFeatureAsync("stock");
         var id = Guid.NewGuid();
         await using var conn = await tenant.OpenAsync();
-        await conn.ExecuteAsync(
-            @"INSERT INTO dbo.stock_products (id, shop_id, name, category, code, price, purchase_price, quantity, min_quantity)
-              VALUES (@id, @shopId, @Name, @Category, @Code, @Price, @PurchasePrice, @Quantity, @MinQuantity)",
-            new
-            {
-                id, shopId, req.Name, req.Category, req.Code, req.Price,
-                PurchasePrice = req.PurchasePrice, req.Quantity, req.MinQuantity,
-            });
-        return (await GetStockAsync()).FirstOrDefault(s => s.Id == id);
+        try
+        {
+            await conn.ExecuteAsync(
+                @"INSERT INTO dbo.stock_products (id, shop_id, name, category, code, price, purchase_price, quantity, min_quantity)
+                  VALUES (@id, @shopId, @Name, @Category, @Code, @Price, @PurchasePrice, @Quantity, @MinQuantity)",
+                new
+                {
+                    id, shopId, req.Name, req.Category, req.Code, req.Price,
+                    PurchasePrice = req.PurchasePrice, req.Quantity, req.MinQuantity,
+                });
+        }
+        catch (SqlException ex) when (IsUniqueViolation(ex))
+        {
+            throw new StockCodeConflictException();
+        }
+        return await GetStockByIdAsync(conn, id, shopId);
     }
 
     public async Task<StockProductDto?> UpdateStockAsync(Guid id, UpdateStockRequest req)
@@ -537,19 +699,37 @@ public class DataService(
         var shopId = tenant.RequireShopId();
         await plans.RequireFeatureAsync("stock");
         await using var conn = await tenant.OpenAsync();
-        var n = await conn.ExecuteAsync(
-            @"UPDATE dbo.stock_products SET name=@Name, category=@Category, code=@Code,
-              price=@Price, purchase_price=@PurchasePrice, quantity=@Quantity, min_quantity=@MinQuantity,
-              updated_at=SYSUTCDATETIME()
-              WHERE id=@id AND shop_id=@shopId AND is_active=1",
-            new
-            {
-                id, shopId, req.Name, req.Category, req.Code, req.Price,
-                PurchasePrice = req.PurchasePrice, req.Quantity, req.MinQuantity,
-            });
+        int n;
+        try
+        {
+            n = await conn.ExecuteAsync(
+                @"UPDATE dbo.stock_products SET name=@Name, category=@Category, code=@Code,
+                  price=@Price, purchase_price=@PurchasePrice, quantity=@Quantity, min_quantity=@MinQuantity,
+                  updated_at=SYSUTCDATETIME()
+                  WHERE id=@id AND shop_id=@shopId AND is_active=1",
+                new
+                {
+                    id, shopId, req.Name, req.Category, req.Code, req.Price,
+                    PurchasePrice = req.PurchasePrice, req.Quantity, req.MinQuantity,
+                });
+        }
+        catch (SqlException ex) when (IsUniqueViolation(ex))
+        {
+            throw new StockCodeConflictException();
+        }
         if (n == 0) return null;
-        return (await GetStockAsync()).FirstOrDefault(s => s.Id == id);
+        return await GetStockByIdAsync(conn, id, shopId);
     }
+
+    private static bool IsUniqueViolation(SqlException ex) => ex.Number is 2601 or 2627;
+
+    private static Task<StockProductDto?> GetStockByIdAsync(SqlConnection conn, Guid id, Guid shopId) =>
+        conn.QuerySingleOrDefaultAsync<StockProductDto>(
+            @"SELECT id AS Id, name AS Name, category AS Category, code AS Code,
+                     price AS Price, quantity AS Quantity, min_quantity AS MinQuantity,
+                     purchase_price AS PurchasePrice
+              FROM dbo.stock_products WHERE id=@id AND shop_id=@shopId AND is_active=1",
+            new { id, shopId });
 
     /// <summary>
     /// Stok kaydını siler. Ürün herhangi bir stok hareketinde (alış/kullanım) veya
@@ -579,6 +759,16 @@ public class DataService(
               WHERE id=@id AND shop_id=@shopId",
             new { id, shopId });
         return n > 0;
+    }
+
+    /// <summary>PDF'den okunan satırları mevcut stokla eşleştirir (kod normalizasyonu + ad benzerliği).</summary>
+    public async Task<IReadOnlyList<MatchLineResultDto>> MatchStockLinesAsync(MatchStockLinesRequest req)
+    {
+        var shopId = tenant.RequireShopId();
+        await plans.RequireFeatureAsync("stock");
+        if (req.Lines is null || req.Lines.Count == 0) return [];
+        await using var conn = await tenant.OpenAsync();
+        return await StockCodeMatcher.MatchAsync(conn, shopId, req.SupplierId, req.Lines);
     }
 
     public async Task<ImportPurchaseResponse> ImportPurchaseAsync(ImportPurchaseRequest req, Guid userId)
@@ -614,11 +804,51 @@ public class DataService(
             var lineTotal = line.UnitPrice * line.Quantity;
             total += lineTotal;
 
-            var existingId = await conn.ExecuteScalarAsync<Guid?>(
-                @"SELECT TOP 1 id
-                  FROM dbo.stock_products
-                  WHERE shop_id=@shopId AND is_active=1 AND LOWER(LTRIM(RTRIM(name)))=LOWER(@name)",
-                new { shopId, name }, tx);
+            var rawCode = string.IsNullOrWhiteSpace(line.Code) ? null : line.Code.Trim();
+            var mfrCode = string.IsNullOrWhiteSpace(line.ManufacturerCode) ? null : line.ManufacturerCode.Trim();
+
+            Guid? existingId = null;
+
+            // 1) Kullanıcının (veya otomatik eşleşmenin) seçtiği stok ürünü
+            if (line.StockProductId is Guid chosen)
+            {
+                existingId = await conn.ExecuteScalarAsync<Guid?>(
+                    "SELECT id FROM dbo.stock_products WHERE id=@chosen AND shop_id=@shopId AND is_active=1",
+                    new { chosen, shopId }, tx);
+            }
+
+            // 2) Kod verilmişse: alias (tedarikçi + ham kod) → code_norm eşitliği
+            if (existingId is null && rawCode is not null)
+            {
+                var rawCanon = StockCodeMatcher.Canonical(rawCode);
+                existingId = await conn.ExecuteScalarAsync<Guid?>(
+                    @"SELECT TOP 1 a.stock_product_id
+                      FROM dbo.stock_code_aliases a
+                      JOIN dbo.stock_products p ON p.id=a.stock_product_id AND p.is_active=1
+                      WHERE a.shop_id=@shopId AND a.raw_code_norm=@rawCanon
+                      ORDER BY CASE WHEN a.supplier_id=@supplierId THEN 0 ELSE 1 END",
+                    new { shopId, rawCanon, supplierId = req.SupplierId }, tx);
+
+                if (existingId is null)
+                {
+                    var canon = StockCodeMatcher.Canonical(mfrCode ?? rawCode);
+                    var hits = (await conn.QueryAsync<Guid>(
+                        @"SELECT id FROM dbo.stock_products
+                          WHERE shop_id=@shopId AND is_active=1 AND code_norm=@canon",
+                        new { shopId, canon }, tx)).ToList();
+                    if (hits.Count == 1) existingId = hits[0];
+                }
+            }
+
+            // 3) Kodsuz satır: eski davranış — ad eşitliği
+            if (existingId is null && rawCode is null && line.StockProductId is null)
+            {
+                existingId = await conn.ExecuteScalarAsync<Guid?>(
+                    @"SELECT TOP 1 id
+                      FROM dbo.stock_products
+                      WHERE shop_id=@shopId AND is_active=1 AND LOWER(LTRIM(RTRIM(name)))=LOWER(@name)",
+                    new { shopId, name }, tx);
+            }
 
             if (existingId is Guid stockId)
             {
@@ -644,11 +874,35 @@ public class DataService(
                         shopId, stockId, qty = line.Quantity, userId,
                         reason = $"PDF alım{(string.IsNullOrWhiteSpace(req.DocumentNo) ? "" : ": " + req.DocumentNo)}",
                     }, tx);
+                // Ürünün kodu boşsa üretici kodunu yaz (çakışırsa dokunma)
+                var fillCode = mfrCode ?? rawCode;
+                if (fillCode is not null)
+                {
+                    await conn.ExecuteAsync(
+                        @"UPDATE p SET code=@fillCode, updated_at=SYSUTCDATETIME()
+                          FROM dbo.stock_products p
+                          WHERE p.id=@id AND p.shop_id=@shopId AND p.code IS NULL
+                            AND NOT EXISTS (SELECT 1 FROM dbo.stock_products x
+                                            WHERE x.shop_id=@shopId AND x.code=@fillCode AND x.id<>@id)",
+                        new { id = stockId, shopId, fillCode = fillCode.Length > 50 ? fillCode[..50] : fillCode }, tx);
+                }
+                if (rawCode is not null)
+                    await StockCodeMatcher.UpsertAliasAsync(conn, tx, shopId, stockId, req.SupplierId, rawCode, mfrCode, line.Brand, userId);
                 updated++;
             }
             else
             {
                 var id = Guid.NewGuid();
+                // Yeni ürünün kodu: üretici kodu (ön ek soyulmuş) > ham kod. Aynı kod başka üründe varsa kodsuz oluştur.
+                var newCode = mfrCode ?? rawCode;
+                if (newCode is not null)
+                {
+                    if (newCode.Length > 50) newCode = newCode[..50];
+                    var clash = await conn.ExecuteScalarAsync<int>(
+                        "SELECT COUNT(1) FROM dbo.stock_products WHERE shop_id=@shopId AND code=@newCode",
+                        new { shopId, newCode }, tx);
+                    if (clash > 0) newCode = null;
+                }
                 await conn.ExecuteAsync(
                     @"INSERT INTO dbo.stock_products
                         (id, shop_id, supplier_id, name, category, code, price, purchase_price, quantity, min_quantity)
@@ -657,7 +911,7 @@ public class DataService(
                     new
                     {
                         id, shopId, supplierId = req.SupplierId, name, category,
-                        code = string.IsNullOrWhiteSpace(line.Code) ? null : line.Code.Trim(),
+                        code = newCode,
                         sale, purchase = line.UnitPrice, qty = line.Quantity,
                     }, tx);
                 await conn.ExecuteAsync(
@@ -668,6 +922,8 @@ public class DataService(
                         shopId, stockId = id, qty = line.Quantity, userId,
                         reason = $"PDF alım{(string.IsNullOrWhiteSpace(req.DocumentNo) ? "" : ": " + req.DocumentNo)}",
                     }, tx);
+                if (rawCode is not null)
+                    await StockCodeMatcher.UpsertAliasAsync(conn, tx, shopId, id, req.SupplierId, rawCode, mfrCode, line.Brand, userId);
                 created++;
             }
         }
@@ -691,6 +947,10 @@ public class DataService(
         return new ImportPurchaseResponse(created, updated, total, ledgerId);
     }
 
+    /// <summary>
+    /// Mobil araç listesi — her iş emri için ayrı detay sorgusu YAPMAZ (N+1).
+    /// Liste için özet + toplamlar; şikayet/işçilik/parça detaya girince refresh ile gelir.
+    /// </summary>
     public async Task<IReadOnlyList<WorkOrderDetailDto>> GetMobileVehiclesAsync()
     {
         var shopId = tenant.RequireShopId();
@@ -698,12 +958,58 @@ public class DataService(
         var seeAll = tenant.CanSeeAllWorkOrders();
         await using var conn = await tenant.OpenAsync();
         var sql = @"
-            SELECT wo.id FROM dbo.work_orders wo
+            SELECT wo.id AS Id,
+                   wo.order_no AS OrderNo,
+                   wo.status AS Status,
+                   wo.discount_amount AS Discount,
+                   wo.opened_at AS OpenedAt,
+                   wo.started_at AS StartedAt,
+                   wo.closed_at AS ClosedAt,
+                   ISNULL(au.full_name, wo.assigned_user_name) AS AssignedTo,
+                   v.id AS VehicleId,
+                   v.customer_id AS CustomerId,
+                   v.plate AS Plate,
+                   v.brand AS Brand,
+                   v.model AS Model,
+                   CAST(v.model_year AS int) AS ModelYear,
+                   v.color AS Color,
+                   v.fuel AS Fuel,
+                   v.chassis_no AS ChassisNo,
+                   v.engine_no AS EngineNo,
+                   v.engine_volume AS EngineVolume,
+                   CAST(v.mileage AS int) AS Mileage,
+                   c.full_name AS CustomerName,
+                   c.phone AS CustomerPhone,
+                   c.customer_type AS CustomerType,
+                   c.email AS CustomerEmail,
+                   c.address AS CustomerAddress,
+                   c.city AS CustomerCity,
+                   ISNULL(t.labor_total, 0) AS LaborTotal,
+                   ISNULL(t.parts_total, 0) AS PartsTotal,
+                   ISNULL(t.grand_total, 0) AS GrandTotal,
+                   ISNULL(t.paid_total, 0) AS PaidTotal,
+                   vn.VisitNumber AS VisitNumber
+            FROM dbo.work_orders wo
             INNER JOIN (
                 SELECT vehicle_id, MAX(opened_at) AS max_opened
-                FROM dbo.work_orders WHERE shop_id=@shopId GROUP BY vehicle_id
-            ) latest ON latest.vehicle_id=wo.vehicle_id AND latest.max_opened=wo.opened_at
-            WHERE wo.shop_id=@shopId";
+                FROM dbo.work_orders
+                WHERE shop_id = @shopId
+                GROUP BY vehicle_id
+            ) latest ON latest.vehicle_id = wo.vehicle_id AND latest.max_opened = wo.opened_at
+            INNER JOIN (
+                SELECT id,
+                       CAST(ROW_NUMBER() OVER (
+                           PARTITION BY vehicle_id
+                           ORDER BY opened_at ASC, order_no ASC
+                       ) AS int) AS VisitNumber
+                FROM dbo.work_orders
+                WHERE shop_id = @shopId
+            ) vn ON vn.id = wo.id
+            INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id AND v.is_active = 1
+            INNER JOIN dbo.customers c ON c.id = wo.customer_id
+            LEFT JOIN dbo.users au ON au.id = wo.assigned_user_id
+            LEFT JOIN dbo.vw_WorkOrderTotals t ON t.id = wo.id
+            WHERE wo.shop_id = @shopId";
         if (!seeAll)
         {
             // Yönetici dışı: kendine atanan + henüz atanmamış (bekleyen) işler
@@ -714,13 +1020,55 @@ public class DataService(
         }
         sql += " ORDER BY wo.opened_at DESC";
 
-        var woIds = (await conn.QueryAsync<Guid>(sql, new { shopId, userId })).ToList();
+        var rows = (await conn.QueryAsync(sql, new { shopId, userId })).ToList();
+        var emptyComplaints = Array.Empty<ComplaintDto>();
+        var emptyServices = Array.Empty<ServiceLineDto>();
+        var emptyParts = Array.Empty<PartLineDto>();
 
-        var list = new List<WorkOrderDetailDto>();
-        foreach (var woId in woIds)
+        var list = new List<WorkOrderDetailDto>(rows.Count);
+        foreach (var wo in rows)
         {
-            var d = await GetWorkOrderDetailAsync(woId);
-            if (d is not null) list.Add(d);
+            list.Add(new WorkOrderDetailDto(
+                (Guid)wo.Id,
+                (long)wo.OrderNo,
+                (string)wo.Status,
+                new VehicleDto(
+                    (Guid)wo.VehicleId,
+                    (Guid)wo.CustomerId,
+                    (string)wo.CustomerName,
+                    (string)wo.Plate,
+                    (string)wo.Brand,
+                    (string)wo.Model,
+                    (int?)wo.ModelYear,
+                    (string?)wo.Color,
+                    (string)wo.Fuel,
+                    (string?)wo.ChassisNo,
+                    (string?)wo.EngineNo,
+                    (string?)wo.EngineVolume,
+                    (int?)wo.Mileage,
+                    (string)wo.Status),
+                new CustomerDto(
+                    (Guid)wo.CustomerId,
+                    (string)wo.CustomerType,
+                    (string)wo.CustomerName,
+                    null,
+                    (string)wo.CustomerPhone,
+                    (string?)wo.CustomerEmail,
+                    (string?)wo.CustomerAddress,
+                    (string?)wo.CustomerCity),
+                emptyComplaints,
+                emptyServices,
+                emptyParts,
+                (decimal)wo.LaborTotal,
+                (decimal)wo.PartsTotal,
+                (decimal)wo.Discount,
+                (decimal)wo.GrandTotal,
+                (decimal)wo.PaidTotal,
+                (string?)wo.AssignedTo,
+                (DateTime)wo.OpenedAt,
+                (DateTime?)wo.StartedAt,
+                (DateTime?)wo.ClosedAt,
+                Convert.ToInt32(wo.VisitNumber)));
         }
         return list;
     }
@@ -776,6 +1124,121 @@ public class DataService(
     {
         var shopId = tenant.RequireShopId();
         await using var conn = await tenant.OpenAsync();
+
+        var current = await conn.QuerySingleOrDefaultAsync<dynamic>(
+            @"SELECT source AS Source, stock_product_id AS StockProductId, supplier_id AS SupplierId,
+                     quantity AS Quantity, returned_at AS ReturnedAt
+              FROM dbo.work_order_parts
+              WHERE id = @partId AND work_order_id = @woId AND shop_id = @shopId",
+            new { partId, woId, shopId });
+        if (current is null)
+            throw new ArgumentException("Parça bulunamadı.");
+        if (current.ReturnedAt is not null)
+            throw new ArgumentException("Tedarikçiye iade edilmiş parça düzenlenemez.");
+
+        var currentSource = ((string)current.Source ?? "stok").Trim().ToLowerInvariant();
+        var newSource = string.IsNullOrWhiteSpace(req.Source)
+            ? currentSource
+            : req.Source.Trim().ToLowerInvariant();
+        if (newSource is not ("stok" or "disaridan"))
+            newSource = currentSource;
+        // Eski istemci source göndermese bile tedarikçi id gelirse dışarıdan alıma çevir.
+        if (req.SupplierId is not null && newSource != "disaridan")
+            newSource = "disaridan";
+
+        if (newSource != currentSource)
+        {
+            if (newSource == "disaridan")
+            {
+                await plans.RequireFeatureAsync("suppliers");
+                if (req.SupplierId is null)
+                    throw new ArgumentException("Dışarıdan alım için tedarikçi seçin.");
+                Guid? oldStockId = current.StockProductId;
+                var oldQty = (int)current.Quantity;
+                await using var tx = await conn.BeginTransactionAsync();
+                try
+                {
+                    if (oldStockId is not null)
+                    {
+                        await conn.ExecuteAsync(
+                            @"UPDATE dbo.stock_products SET quantity = quantity + @oldQty
+                              WHERE id = @oldStockId AND shop_id = @shopId;
+                              INSERT INTO dbo.stock_movements
+                                (id, shop_id, stock_product_id, change_qty, movement_type, reason, work_order_id, created_by)
+                              VALUES (NEWID(), @shopId, @oldStockId, @oldQty, N'giris', N'Stoktan tedarikçiye alındı', @woId, @userId);",
+                            new { oldQty, oldStockId, shopId, woId, userId }, tx);
+                    }
+                    await conn.ExecuteAsync(
+                        @"DELETE FROM dbo.supplier_transactions
+                          WHERE work_order_part_id = @partId AND shop_id = @shopId AND type = N'alis';
+                          UPDATE dbo.work_order_parts
+                          SET source = N'disaridan', supplier_id = @SupplierId, stock_product_id = NULL,
+                              name = @Name, quantity = @Quantity, unit_price = @UnitPrice,
+                              purchase_price = @PurchasePrice
+                          WHERE id = @partId AND shop_id = @shopId;",
+                        new { partId, shopId, req.SupplierId, req.Name, req.Quantity, req.UnitPrice,
+                            PurchasePrice = req.PurchasePrice ?? req.UnitPrice }, tx);
+                    var alis = (req.PurchasePrice ?? req.UnitPrice) * req.Quantity;
+                    if (alis > 0)
+                    {
+                        await conn.ExecuteAsync(
+                            @"INSERT INTO dbo.supplier_transactions
+                                (id, shop_id, supplier_id, type, amount, work_order_part_id, description, created_by)
+                              VALUES (NEWID(), @shopId, @SupplierId, N'alis', @alis, @partId, @desc, @userId);",
+                            new { shopId, req.SupplierId, alis, partId, userId,
+                                desc = "İş emri için dışarıdan alım: " + req.Name }, tx);
+                    }
+                    await tx.CommitAsync();
+                }
+                catch
+                {
+                    await tx.RollbackAsync();
+                    throw;
+                }
+            }
+            else
+            {
+                await plans.RequireFeatureAsync("stock");
+                if (req.StockProductId is null)
+                    throw new ArgumentException("Stoktan kullanım için ürün seçin.");
+                await using var tx = await conn.BeginTransactionAsync();
+                try
+                {
+                    await conn.ExecuteAsync(
+                        @"DELETE FROM dbo.supplier_transactions
+                          WHERE work_order_part_id = @partId AND shop_id = @shopId AND type = N'alis';",
+                        new { partId, shopId }, tx);
+                    await conn.ExecuteAsync(
+                        @"IF (SELECT quantity FROM dbo.stock_products WHERE id=@StockProductId AND shop_id=@shopId) < @Quantity
+                              THROW 50002, N'Yetersiz stok.', 1;
+                          UPDATE dbo.stock_products SET quantity = quantity - @Quantity
+                          WHERE id = @StockProductId AND shop_id = @shopId;
+                          INSERT INTO dbo.stock_movements
+                            (id, shop_id, stock_product_id, change_qty, movement_type, reason, work_order_id, created_by)
+                          VALUES (NEWID(), @shopId, @StockProductId, -@Quantity, N'cikis', N'Tedarikçiden stoka alındı', @woId, @userId);
+                          UPDATE dbo.work_order_parts
+                          SET source = N'stok', stock_product_id = @StockProductId, supplier_id = NULL,
+                              purchase_price = NULL, name = @Name, quantity = @Quantity, unit_price = @UnitPrice
+                          WHERE id = @partId AND shop_id = @shopId;",
+                        new { partId, shopId, req.StockProductId, req.Quantity, woId, userId, req.Name, req.UnitPrice }, tx);
+                    await tx.CommitAsync();
+                }
+                catch
+                {
+                    await tx.RollbackAsync();
+                    throw;
+                }
+            }
+
+            await SyncWorkOrderPaymentStatusAsync(conn, woId, shopId);
+            var switched = await GetWorkOrderContextAsync(conn, woId, shopId);
+            if (switched is not null)
+                await ActivityLogService.LogAsync(
+                    conn, shopId, userId, "updated", "part", partId,
+                    $"Ürün kaynağı değişti ({newSource}): {req.Name} x{req.Quantity} — {switched.Plate}",
+                    customerId: switched.CustomerId, vehicleId: switched.VehicleId);
+            return;
+        }
 
         // Alış fiyatını SP'den önce yaz: eski usp_UpdateWorkOrderPart @purchase_price
         // kabul etmez (8144 → HTTP 500); yeni SP (SQL17) NULL gelince DB'deki değeri kullanır.
@@ -868,10 +1331,33 @@ public class DataService(
         if (!string.IsNullOrWhiteSpace(category))
             sql += " AND category = @category";
         if (!string.IsNullOrWhiteSpace(search))
-            sql += " AND (name LIKE @q OR code LIKE @q)";
+            sql += " AND (name LIKE @q OR code LIKE @q OR code_norm LIKE @qn)";
         sql += " ORDER BY name";
-        var rows = await conn.QueryAsync<StockProductDto>(sql, new { shopId, category, q = $"%{search?.Trim()}%" });
-        return rows.ToList();
+        var qn = StockCodeMatcher.Canonical(search);
+        var args = new
+        {
+            shopId,
+            category,
+            q = $"%{search?.Trim()}%",
+            qn = qn.Length > 0 ? $"%{qn}%" : "%",
+        };
+        try
+        {
+            return (await conn.QueryAsync<StockProductDto>(sql, args)).ToList();
+        }
+        catch (SqlException ex) when (ex.Number == 207)
+        {
+            var fallback = @"SELECT id AS Id, name AS Name, category AS Category, code AS Code,
+                           price AS Price, quantity AS Quantity, min_quantity AS MinQuantity,
+                           purchase_price AS PurchasePrice
+                    FROM dbo.stock_products WHERE shop_id = @shopId AND is_active = 1";
+            if (!string.IsNullOrWhiteSpace(category))
+                fallback += " AND category = @category";
+            if (!string.IsNullOrWhiteSpace(search))
+                fallback += " AND (name LIKE @q OR code LIKE @q)";
+            fallback += " ORDER BY name";
+            return (await conn.QueryAsync<StockProductDto>(fallback, args)).ToList();
+        }
     }
 
     public async Task<IReadOnlyList<WorkOrderDto>> GetWorkOrdersAsync(string? status = null)
@@ -884,8 +1370,18 @@ public class DataService(
             SELECT wo.id AS Id, wo.order_no AS OrderNo, wo.status AS Status,
                    v.plate AS Plate, c.full_name AS CustomerName, c.phone AS CustomerPhone,
                    wo.mileage_in AS MileageIn, t.grand_total AS GrandTotal, t.paid_total AS PaidTotal,
-                   wo.opened_at AS OpenedAt
+                   wo.opened_at AS OpenedAt,
+                   vn.VisitNumber AS VisitNumber
             FROM dbo.work_orders wo
+            INNER JOIN (
+                SELECT id,
+                       CAST(ROW_NUMBER() OVER (
+                           PARTITION BY vehicle_id
+                           ORDER BY opened_at ASC, order_no ASC
+                       ) AS int) AS VisitNumber
+                FROM dbo.work_orders
+                WHERE shop_id = @shopId
+            ) vn ON vn.id = wo.id
             INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id
             INNER JOIN dbo.customers c ON c.id = wo.customer_id
             LEFT JOIN dbo.vw_WorkOrderTotals t ON t.id = wo.id
@@ -921,7 +1417,17 @@ public class DataService(
                      v.model_year AS ModelYear, v.color, v.fuel, v.chassis_no AS ChassisNo,
                      v.engine_no AS EngineNo, v.engine_volume AS EngineVolume, v.mileage,
                      c.full_name AS CustomerName, c.phone AS CustomerPhone, c.customer_type AS CustomerType,
-                     c.email AS CustomerEmail, c.address AS CustomerAddress, c.city AS CustomerCity
+                     c.email AS CustomerEmail, c.address AS CustomerAddress, c.city AS CustomerCity,
+                     CAST((
+                         SELECT COUNT_BIG(1)
+                         FROM dbo.work_orders w2
+                         WHERE w2.shop_id = wo.shop_id
+                           AND w2.vehicle_id = wo.vehicle_id
+                           AND (
+                             w2.opened_at < wo.opened_at
+                             OR (w2.opened_at = wo.opened_at AND w2.order_no <= wo.order_no)
+                           )
+                     ) AS int) AS VisitNumber
               FROM dbo.work_orders wo
               INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id
               INNER JOIN dbo.customers c ON c.id = wo.customer_id
@@ -976,7 +1482,8 @@ public class DataService(
             complaints, services, parts,
             (decimal)totals.LaborTotal, (decimal)totals.PartsTotal, (decimal)wo.Discount,
             (decimal)totals.GrandTotal, (decimal)totals.PaidTotal, assignedTo,
-            (DateTime)wo.OpenedAt, (DateTime?)wo.StartedAt, (DateTime?)wo.ClosedAt);
+            (DateTime)wo.OpenedAt, (DateTime?)wo.StartedAt, (DateTime?)wo.ClosedAt,
+            wo.VisitNumber is int vn ? vn : Convert.ToInt32(wo.VisitNumber));
     }
 
     public async Task<IReadOnlyList<StaffDto>> GetStaffAsync(string? callerRole, Guid callerUserId)
@@ -1002,15 +1509,31 @@ public class DataService(
             @"SELECT wo.id AS WorkOrderId, v.id AS VehicleId, v.plate AS Plate,
                      c.full_name AS CustomerName, wo.status AS Status,
                      t.grand_total AS GrandTotal, t.paid_total AS PaidTotal,
-                     t.grand_total - t.paid_total AS Remaining
+                     t.grand_total - t.paid_total AS Remaining,
+                     vn.VisitNumber AS VisitNumber,
+                     ISNULL(wo.closed_at, wo.opened_at) AS PendingSince,
+                     DATEDIFF(
+                         day,
+                         CAST(DATEADD(HOUR, 3, ISNULL(wo.closed_at, wo.opened_at)) AS date),
+                         CAST(DATEADD(HOUR, 3, SYSUTCDATETIME()) AS date)
+                     ) AS DaysWaiting
               FROM dbo.work_orders wo
+              INNER JOIN (
+                  SELECT id,
+                         CAST(ROW_NUMBER() OVER (
+                             PARTITION BY vehicle_id
+                             ORDER BY opened_at ASC, order_no ASC
+                         ) AS int) AS VisitNumber
+                  FROM dbo.work_orders
+                  WHERE shop_id = @shopId
+              ) vn ON vn.id = wo.id
               INNER JOIN dbo.vw_WorkOrderTotals t ON t.id = wo.id
               INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id
               INNER JOIN dbo.customers c ON c.id = wo.customer_id
               WHERE wo.shop_id = @shopId
                 AND wo.status IN (N'tamamlandi', N'odeme_tamamlandi', N'teslim_edildi')
                 AND t.grand_total - t.paid_total > 0.005
-              ORDER BY Remaining DESC, v.plate",
+              ORDER BY DaysWaiting DESC, Remaining DESC, v.plate",
             new { shopId })).ToList();
         return new PaymentsPendingReportDto(
             items.Count,
@@ -1223,15 +1746,20 @@ public class DataService(
             return n0 > 0;
         }
 
+        var openedAtUtc = await conn.ExecuteScalarAsync<DateTime?>(
+            "SELECT opened_at FROM dbo.work_orders WHERE id=@id AND shop_id=@shopId",
+            new { id, shopId }) ?? DateTime.UtcNow;
+        var eventAt = EventStampForWorkOrder(openedAtUtc);
+
         if (status is "tamamlandi")
         {
             var n0 = await conn.ExecuteAsync(
                 @"UPDATE dbo.work_orders
                   SET status=@status,
-                      closed_at=ISNULL(closed_at, SYSUTCDATETIME()),
+                      closed_at=ISNULL(closed_at, @eventAt),
                       delivered_at=NULL
                   WHERE id=@id AND shop_id=@shopId",
-                new { id, status, shopId });
+                new { id, status, shopId, eventAt });
             return await LogAndReturnAsync(n0);
         }
 
@@ -1240,10 +1768,10 @@ public class DataService(
             var n0 = await conn.ExecuteAsync(
                 @"UPDATE dbo.work_orders
                   SET status=@status,
-                      closed_at=ISNULL(closed_at, SYSUTCDATETIME()),
-                      delivered_at=ISNULL(delivered_at, SYSUTCDATETIME())
+                      closed_at=ISNULL(closed_at, @eventAt),
+                      delivered_at=ISNULL(delivered_at, @eventAt)
                   WHERE id=@id AND shop_id=@shopId",
-                new { id, status, shopId });
+                new { id, status, shopId, eventAt });
             return await LogAndReturnAsync(n0);
         }
 
@@ -1252,9 +1780,9 @@ public class DataService(
             var n0 = await conn.ExecuteAsync(
                 @"UPDATE dbo.work_orders
                   SET status=@status,
-                      closed_at=ISNULL(closed_at, SYSUTCDATETIME())
+                      closed_at=ISNULL(closed_at, @eventAt)
                   WHERE id=@id AND shop_id=@shopId",
-                new { id, status, shopId });
+                new { id, status, shopId, eventAt });
             return await LogAndReturnAsync(n0);
         }
 
@@ -1306,16 +1834,17 @@ public class DataService(
               SET status=@status,
                   assigned_user_id=@finalUserId,
                   assigned_user_name=@finalUserName,
-                  started_at=ISNULL(started_at, SYSUTCDATETIME()),
+                  started_at=ISNULL(started_at, @eventAt),
                   closed_at=NULL,
                   delivered_at=NULL
               WHERE id=@id AND shop_id=@shopId",
-            new { id, status, shopId, finalUserId, finalUserName });
+            new { id, status, shopId, finalUserId, finalUserName, eventAt });
         return await LogAndReturnAsync(n);
     }
 
     public async Task<OpenNewVisitResponse?> OpenNewVisitAsync(
-        Guid vehicleId, Guid userId, string? complaint, string? complaintCategory = null)
+        Guid vehicleId, Guid userId, string? complaint, string? complaintCategory = null,
+        DateTime? openedAt = null)
     {
         var shopId = tenant.RequireShopId();
         await plans.EnsureWorkOrderQuotaAsync();
@@ -1335,7 +1864,7 @@ public class DataService(
             new { shopId }, tx);
 
         var woId = Guid.NewGuid();
-        var now = DateTime.UtcNow;
+        var now = ResolveOpenedAtUtc(openedAt);
         int? mileage = vehicle.mileage;
         await conn.ExecuteAsync(
             @"INSERT INTO dbo.work_orders (id, shop_id, order_no, vehicle_id, customer_id, opened_by, status, mileage_in, opened_at)
@@ -1611,10 +2140,9 @@ public class DataService(
               WHERE id = @paymentId AND work_order_id = @woId AND shop_id = @shopId",
             new { paymentId, woId, shopId, req.Amount, method });
 
-        // Bu tahsilatla birlikte "tedarikçiye de öde" seçeneğiyle yazılmış bağlı
-        // tedarikçi ödemesi varsa (açıklamadaki pid: işareti), tutarı aynı oranda
-        // güncelle — aksi halde müşteriden alınan tutar değişirken tedarikçiye
-        // "ödendi" görünen tutar eskisinde kalır ve cari tutarsız hale gelir.
+        // Bağlı tedarikçi ödemesi (pid: işareti): müşteri tahsilatı düşerse
+        // tedarikçi tutarı onu aşamaz; artarsa tedarikçi tutarı büyütülmez
+        // (oranlama yapılmaz — 22.850 tahsil / 20.000 tedarikçi senaryosu).
         await SyncLinkedSupplierPaymentAsync(conn, shopId, paymentId, current.Value, req.Amount, userId);
 
         await SyncWorkOrderPaymentStatusAsync(conn, woId, shopId);
@@ -1631,11 +2159,9 @@ public class DataService(
     }
 
     /// <summary>
-    /// "Müşteriden Tahsilat" ekranında "tedarikçiye de öde" seçeneğiyle bir
-    /// tahsilatla birlikte otomatik yazılan tedarikçi ödemesini bulur (açıklamada
-    /// "pid:{paymentId}" işareti) ve tahsilat tutarı değiştiğinde aynı oranda
-    /// günceller. Oranlanan tutar 0'a inerse (ör. tahsilat neredeyse iptal edildiyse)
-    /// cari hareketi tamamen kaldırır — CK_suptx_amount (amount &gt; 0) ihlalini önler.
+    /// "Tedarikçiye de öde" ile yazılmış bağlı ödemeyi bulur (açıklamada pid:).
+    /// Tahsilat düşürülürse tedarikçi tutarı yeni tahsilatı aşamaz; tahsilat
+    /// artarsa tedarikçi tutarı büyütülmez. 0'a inerse satır silinir.
     /// </summary>
     private static async Task SyncLinkedSupplierPaymentAsync(
         SqlConnection conn, Guid shopId, Guid paymentId, decimal oldAmount, decimal newAmount, Guid? userId)
@@ -1648,12 +2174,14 @@ public class DataService(
             new { shopId, marker })).ToList();
         if (linkedRows.Count == 0) return;
 
-        var ratio = newAmount / oldAmount;
         foreach (var linked in linkedRows)
         {
             Guid linkedId = linked.id;
             Guid supplierId = linked.SupplierId;
-            var newSupplierAmount = Math.Round((decimal)linked.amount * ratio, 2);
+            var linkedAmount = (decimal)linked.amount;
+            // Oranlama yok: min(mevcut tedarikçi ödemesi, yeni tahsilat)
+            var newSupplierAmount = Math.Round(Math.Min(linkedAmount, newAmount), 2);
+            if (newSupplierAmount == linkedAmount) continue;
 
             if (newSupplierAmount <= 0)
             {
@@ -1813,12 +2341,18 @@ public class DataService(
         if (!req.Force && IsCompletedStatus(status))
             throw new WorkOrderCompletedException();
 
+        var openedAtUtc = await conn.ExecuteScalarAsync<DateTime?>(
+            "SELECT opened_at FROM dbo.work_orders WHERE id=@woId AND shop_id=@shopId",
+            new { woId, shopId });
+        if (openedAtUtc is null) return null;
+        var createdAt = EventStampForWorkOrder(openedAtUtc.Value);
+
         var id = Guid.NewGuid();
         var n = await conn.ExecuteAsync(
-            @"INSERT INTO dbo.services (id, shop_id, work_order_id, service_catalog_id, title, price, performed_by)
-              SELECT @id, @shopId, @woId, @ServiceCatalogId, @Title, @Price, @userId
+            @"INSERT INTO dbo.services (id, shop_id, work_order_id, service_catalog_id, title, price, performed_by, created_at)
+              SELECT @id, @shopId, @woId, @ServiceCatalogId, @Title, @Price, @userId, @createdAt
               WHERE EXISTS (SELECT 1 FROM dbo.work_orders WHERE id=@woId AND shop_id=@shopId)",
-            new { id, shopId, woId, req.ServiceCatalogId, req.Title, req.Price, userId });
+            new { id, shopId, woId, req.ServiceCatalogId, req.Title, req.Price, userId, createdAt });
         if (n > 0)
         {
             await SyncWorkOrderPaymentStatusAsync(conn, woId, shopId);
@@ -1866,7 +2400,44 @@ public class DataService(
                 req.Source, req.SupplierId, req.PurchasePrice,
             });
 
+        // Geçmiş tarihli iş emrinde eklenen parçanın created_at'ini ziyaret tarihine çek
+        var openedAtUtc = await conn.ExecuteScalarAsync<DateTime?>(
+            "SELECT opened_at FROM dbo.work_orders WHERE id=@woId AND shop_id=@shopId",
+            new { woId, shopId });
+        if (openedAtUtc is DateTime oa && IsBackdatedOpenedAt(oa))
+        {
+            var partId = await conn.ExecuteScalarAsync<Guid?>(
+                @"SELECT TOP 1 id FROM dbo.work_order_parts
+                  WHERE work_order_id=@woId AND shop_id=@shopId
+                  ORDER BY created_at DESC",
+                new { woId, shopId });
+            if (partId.HasValue)
+            {
+                await conn.ExecuteAsync(
+                    @"UPDATE dbo.work_order_parts SET created_at=@oa WHERE id=@partId AND shop_id=@shopId;
+                      UPDATE dbo.stock_movements SET created_at=@oa
+                        WHERE work_order_id=@woId AND shop_id=@shopId
+                          AND created_at >= DATEADD(minute, -2, SYSUTCDATETIME());
+                      UPDATE dbo.supplier_transactions SET created_at=@oa
+                        WHERE work_order_part_id=@partId AND shop_id=@shopId",
+                    new { oa, partId, woId, shopId });
+            }
+        }
+
         await SyncWorkOrderPaymentStatusAsync(conn, woId, shopId);
+
+        // PDF'den gelen tedarikçi kodu stoktaki bir ürünle eşleştirildiyse alias olarak öğren
+        var aliasTarget = req.MatchedStockProductId ?? req.StockProductId;
+        if (aliasTarget.HasValue && !string.IsNullOrWhiteSpace(req.SupplierCode))
+        {
+            try
+            {
+                await StockCodeMatcher.UpsertAliasAsync(
+                    conn, null, shopId, aliasTarget.Value, req.SupplierId,
+                    req.SupplierCode, req.ManufacturerCode, req.Brand, userId);
+            }
+            catch (SqlException) { /* alias öğrenme kritik değil */ }
+        }
 
         var ctx = await GetWorkOrderContextAsync(conn, woId, shopId);
         if (ctx is not null)
@@ -1965,7 +2536,8 @@ public class DataService(
                      st.created_at AS CreatedAt, st.method AS Method,
                      st.work_order_part_id AS WorkOrderPartId,
                      p.name AS PartName, p.quantity AS PartQuantity, p.purchase_price AS PurchasePrice,
-                     v.plate AS Plate, wo.id AS WorkOrderId, v.id AS VehicleId
+                     v.plate AS Plate, v.brand AS Brand, v.model AS Model,
+                     wo.id AS WorkOrderId, v.id AS VehicleId
               FROM dbo.supplier_transactions st
               LEFT JOIN dbo.work_order_parts p ON p.id = st.work_order_part_id
               LEFT JOIN dbo.work_orders wo ON wo.id = p.work_order_id
@@ -2188,31 +2760,143 @@ public class DataService(
         return rows.ToList();
     }
 
-    /// <summary>Ürün hareketleri — isim eşleşmesi (stok + dışarıdan birlikte).</summary>
-    public async Task<IReadOnlyList<StockMovementDetailRow>> GetStockMovementDetailAsync(
-        Guid? stockProductId, string name, DateOnly fromInclusive, DateOnly toInclusive)
+    public async Task<IReadOnlyList<StockPurchaseSaleVehicleRow>> GetStockPurchaseSaleByVehicleAsync(
+        DateOnly fromInclusive, DateOnly toInclusive)
     {
         var shopId = tenant.RequireShopId();
+        await plans.RequireFeatureAsync("stock");
         var (from, to) = InclusiveDateRange(fromInclusive, toInclusive);
-        var nameKey = (name ?? string.Empty).Trim();
         await using var conn = await tenant.OpenAsync();
-        var rows = await conn.QueryAsync<StockMovementDetailRow>(
-            @"SELECT p.created_at AS Date, v.plate AS Plate, c.full_name AS CustomerName,
-                     p.quantity AS Quantity, p.unit_price AS UnitPrice,
-                     p.purchase_price AS PurchasePrice, sup.full_name AS SupplierName
+        var rows = await conn.QueryAsync<StockPurchaseSaleVehicleRow>(
+            @"SELECT v.id AS VehicleId,
+                     v.plate AS Plate,
+                     MAX(c.full_name) AS CustomerName,
+                     MAX(v.brand) AS Brand,
+                     MAX(v.model) AS Model,
+                     SUM(p.quantity) AS TotalQuantity,
+                     SUM(p.quantity * ISNULL(p.purchase_price, ISNULL(sp.purchase_price, 0))) AS TotalPurchaseAmount,
+                     SUM(p.quantity * p.unit_price) AS TotalSaleAmount,
+                     SUM(p.quantity * p.unit_price)
+                       - SUM(p.quantity * ISNULL(p.purchase_price, ISNULL(sp.purchase_price, 0))) AS Profit
               FROM dbo.work_order_parts p
               INNER JOIN dbo.work_orders wo ON wo.id = p.work_order_id
               INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id
               INNER JOIN dbo.customers c ON c.id = wo.customer_id
+              LEFT JOIN dbo.stock_products sp ON sp.id = p.stock_product_id
+              WHERE p.shop_id = @shopId AND p.returned_at IS NULL
+                AND p.created_at >= @from AND p.created_at < @to
+              GROUP BY v.id, v.plate
+              ORDER BY Profit DESC",
+            new { shopId, from, to });
+        return rows.ToList();
+    }
+
+    public async Task<IReadOnlyList<StockPurchaseSaleSupplierRow>> GetStockPurchaseSaleBySupplierAsync(
+        DateOnly fromInclusive, DateOnly toInclusive)
+    {
+        var shopId = tenant.RequireShopId();
+        await plans.RequireFeatureAsync("stock");
+        var (from, to) = InclusiveDateRange(fromInclusive, toInclusive);
+        await using var conn = await tenant.OpenAsync();
+        var rows = await conn.QueryAsync<StockPurchaseSaleSupplierRow>(
+            @"SELECT x.SupplierId,
+                     x.SupplierName,
+                     x.Source,
+                     SUM(x.Quantity) AS TotalQuantity,
+                     SUM(x.PurchaseAmount) AS TotalPurchaseAmount,
+                     SUM(x.SaleAmount) AS TotalSaleAmount,
+                     SUM(x.SaleAmount) - SUM(x.PurchaseAmount) AS Profit
+              FROM (
+                  SELECT CASE
+                           WHEN ISNULL(p.source, N'stok') = N'disaridan' THEN p.supplier_id
+                           ELSE NULL
+                         END AS SupplierId,
+                         CASE
+                           WHEN ISNULL(p.source, N'stok') <> N'disaridan'
+                             THEN N'Stok'
+                           WHEN p.supplier_id IS NULL
+                             THEN N'Dışarıdan (tedarikçi yok)'
+                           ELSE ISNULL(NULLIF(LTRIM(RTRIM(sup.full_name)), N''), N'Dışarıdan (tedarikçi yok)')
+                         END AS SupplierName,
+                         CASE WHEN ISNULL(p.source, N'stok') = N'disaridan' THEN N'disaridan' ELSE N'stok' END AS Source,
+                         p.quantity AS Quantity,
+                         p.quantity * ISNULL(p.purchase_price, ISNULL(sp.purchase_price, 0)) AS PurchaseAmount,
+                         p.quantity * p.unit_price AS SaleAmount
+                  FROM dbo.work_order_parts p
+                  LEFT JOIN dbo.stock_products sp ON sp.id = p.stock_product_id
+                  LEFT JOIN dbo.customers sup ON sup.id = p.supplier_id AND ISNULL(sup.is_supplier, 0) = 1
+                  WHERE p.shop_id = @shopId AND p.returned_at IS NULL
+                    AND p.created_at >= @from AND p.created_at < @to
+              ) x
+              GROUP BY x.SupplierId, x.SupplierName, x.Source
+              ORDER BY Profit DESC",
+            new { shopId, from, to });
+        return rows.ToList();
+    }
+
+    /// <summary>Ürün / araç / tedarikçi hareketleri (stok + dışarıdan).</summary>
+    public async Task<IReadOnlyList<StockMovementDetailRow>> GetStockMovementDetailAsync(
+        Guid? stockProductId, string? name, DateOnly fromInclusive, DateOnly toInclusive,
+        Guid? vehicleId = null, Guid? supplierId = null, string? source = null)
+    {
+        var shopId = tenant.RequireShopId();
+        var (from, to) = InclusiveDateRange(fromInclusive, toInclusive);
+        var nameKey = (name ?? string.Empty).Trim();
+        var sourceKey = (source ?? string.Empty).Trim().ToLowerInvariant();
+        var filterByName = nameKey.Length > 0 || stockProductId.HasValue;
+        var filterByVehicle = vehicleId.HasValue;
+        var filterBySupplier = sourceKey is "stok" or "disaridan";
+        if (!filterByName && !filterByVehicle && !filterBySupplier)
+            return [];
+
+        await using var conn = await tenant.OpenAsync();
+        var rows = await conn.QueryAsync<StockMovementDetailRow>(
+            @"SELECT p.created_at AS Date, v.plate AS Plate, c.full_name AS CustomerName,
+                     p.quantity AS Quantity, p.unit_price AS UnitPrice,
+                     ISNULL(p.purchase_price, sp.purchase_price) AS PurchasePrice,
+                     CASE
+                       WHEN ISNULL(p.source, N'stok') = N'disaridan' THEN ISNULL(sup.full_name, N'Dışarıdan')
+                       ELSE N'Stok'
+                     END AS SupplierName,
+                     p.name AS PartName
+              FROM dbo.work_order_parts p
+              INNER JOIN dbo.work_orders wo ON wo.id = p.work_order_id
+              INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id
+              INNER JOIN dbo.customers c ON c.id = wo.customer_id
+              LEFT JOIN dbo.stock_products sp ON sp.id = p.stock_product_id
               LEFT JOIN dbo.customers sup ON sup.id = p.supplier_id
               WHERE p.shop_id = @shopId AND p.returned_at IS NULL
                 AND p.created_at >= @from AND p.created_at < @to
                 AND (
-                      LTRIM(RTRIM(p.name)) COLLATE Turkish_CI_AS = @nameKey COLLATE Turkish_CI_AS
+                      @filterByName = 0
+                   OR LTRIM(RTRIM(p.name)) COLLATE Turkish_CI_AS = @nameKey COLLATE Turkish_CI_AS
                    OR (@stockProductId IS NOT NULL AND p.stock_product_id = @stockProductId)
                 )
+                AND (@filterByVehicle = 0 OR v.id = @vehicleId)
+                AND (
+                      @filterBySupplier = 0
+                   OR (
+                        @sourceKey = N'stok'
+                        AND ISNULL(p.source, N'stok') <> N'disaridan'
+                      )
+                   OR (
+                        @sourceKey = N'disaridan'
+                        AND ISNULL(p.source, N'stok') = N'disaridan'
+                        AND (
+                              (@supplierId IS NULL AND p.supplier_id IS NULL)
+                           OR p.supplier_id = @supplierId
+                        )
+                      )
+                )
               ORDER BY p.created_at DESC",
-            new { shopId, stockProductId, nameKey, from, to });
+            new
+            {
+                shopId, stockProductId, nameKey, from, to, vehicleId, supplierId,
+                sourceKey,
+                filterByName = filterByName ? 1 : 0,
+                filterByVehicle = filterByVehicle ? 1 : 0,
+                filterBySupplier = filterBySupplier ? 1 : 0,
+            });
         return rows.ToList();
     }
 
@@ -2344,7 +3028,29 @@ public class DataService(
               INNER JOIN dbo.work_orders wo ON wo.id = s.work_order_id
               WHERE s.shop_id=@shopId AND wo.opened_at >= @from AND wo.opened_at < @to
               GROUP BY s.title
-              ORDER BY SUM(s.price) DESC",
+              ORDER BY SUM(s.price) DESC, COUNT(*) DESC",
+            new { shopId, from, to })).ToList();
+
+        var topJobs = (await conn.QueryAsync<TopServiceRow>(
+            @"SELECT TOP 10 s.title AS Title, COUNT(*) AS Count, SUM(s.price) AS TotalAmount
+              FROM dbo.services s
+              INNER JOIN dbo.work_orders wo ON wo.id = s.work_order_id
+              WHERE s.shop_id=@shopId AND wo.opened_at >= @from AND wo.opened_at < @to
+              GROUP BY s.title
+              ORDER BY COUNT(*) DESC, SUM(s.price) DESC",
+            new { shopId, from, to })).ToList();
+
+        var topParts = (await conn.QueryAsync<TopPartRow>(
+            @"SELECT TOP 10 p.name AS Name,
+                     CAST(SUM(p.quantity) AS int) AS Quantity,
+                     SUM(p.quantity * p.unit_price) AS TotalAmount
+              FROM dbo.work_order_parts p
+              INNER JOIN dbo.work_orders wo ON wo.id = p.work_order_id
+              WHERE p.shop_id = @shopId
+                AND wo.opened_at >= @from AND wo.opened_at < @to
+                AND p.returned_at IS NULL
+              GROUP BY p.name
+              ORDER BY SUM(p.quantity) DESC, SUM(p.quantity * p.unit_price) DESC",
             new { shopId, from, to })).ToList();
 
         decimal nakit = (decimal)methods.Nakit;
@@ -2359,7 +3065,9 @@ public class DataService(
             (decimal)totals.TotalDiscount,
             (decimal)totals.TotalOutstanding,
             nakit, kart, havale, diger,
-            topServices);
+            topServices,
+            topJobs,
+            topParts);
     }
 
     public async Task<WorkOrderImageDto?> AddWorkOrderImageAsync(

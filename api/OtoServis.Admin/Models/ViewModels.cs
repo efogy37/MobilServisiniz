@@ -124,6 +124,8 @@ public class WorkOrderReportRow
     public decimal GrandTotal { get; set; }
     public decimal PaidTotal { get; set; }
     public DateTime OpenedAt { get; set; }
+    /// <summary>Aynı araç için kaçıncı servis kaydı (1, 2, 3…).</summary>
+    public int VisitNumber { get; set; } = 1;
 }
 
 public class WorkOrdersReportViewModel

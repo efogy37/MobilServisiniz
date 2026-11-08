@@ -19,16 +19,18 @@ rem sasirtip ": was unexpected at this time." hatasi verdiriyordu.
 if "%OTOSERVIS_DB_PASS%"=="" set /p OTOSERVIS_DB_PASS=Veritabani parolasi - otoservis_api kullanicisi: 
 
 if "%OTOSERVIS_BASE_DIR%"=="" (
-    set BASE_DIR=C:\OtoServis
+    set BASE_DIR=C:\inetpub\wwwroot\mobilservisiniz
 ) else (
     set BASE_DIR=%OTOSERVIS_BASE_DIR%
 )
 set API_DIR=%BASE_DIR%\api
 set ADMIN_DIR=%BASE_DIR%\admin
 set PLATFORM_DIR=%BASE_DIR%\platform
+set APP_DIR=%BASE_DIR%\app
 set API_ZIP=%BASE_DIR%\OtoServis-Api.zip
 set ADMIN_ZIP=%BASE_DIR%\OtoServis-Admin.zip
 set PLATFORM_ZIP=%BASE_DIR%\OtoServis-Platform.zip
+set WEB_ZIP=%BASE_DIR%\OtoServis-Web.zip
 set SQL1=%BASE_DIR%\05_work_order_assignment.sql
 set SQL2=%BASE_DIR%\06_supplier_ledger.sql
 set SQL3=%BASE_DIR%\07_unify_contacts.sql
@@ -51,11 +53,14 @@ set SQL19=%BASE_DIR%\23_customer_balance_fix.sql
 set SQL20=%BASE_DIR%\24_fix_stale_odeme_tamamlandi_status.sql
 set SQL21=%BASE_DIR%\25_rename_tamamlandi_label.sql
 set SQL22=%BASE_DIR%\26_app_release_store_url.sql
+set SQL23=%BASE_DIR%\27_vehicles_plate_unique_active.sql
+set SQL24=%BASE_DIR%\28_stock_categories_motor_mekanik.sql
+set SQL25=%BASE_DIR%\29_fix_linked_payment_overcollect.sql
 
 if not exist "%API_ZIP%" (
     echo HATA: %API_ZIP% bulunamadi!
     echo Once OtoServis-Api.zip, OtoServis-Admin.zip, OtoServis-Platform.zip
-    echo ve SQL 05-26 dosyalarini C:\OtoServis\ altina kopyalayin.
+    echo ve SQL 05-27 dosyalarini C:\inetpub\wwwroot\mobilservisiniz\ altina kopyalayin.
     pause
     exit /b 1
 )
@@ -100,6 +105,9 @@ call :run_sql "%SQL19%" 23_customer_balance_fix
 call :run_sql "%SQL20%" 24_fix_stale_odeme_tamamlandi_status
 call :run_sql "%SQL21%" 25_rename_tamamlandi_label
 call :run_sql "%SQL22%" 26_app_release_store_url
+call :run_sql "%SQL23%" 27_vehicles_plate_unique_active
+call :run_sql "%SQL24%" 28_stock_categories_motor_mekanik
+call :run_sql "%SQL25%" 29_fix_linked_payment_overcollect
 rem Encoding duzeltmesi EN SONDA: ara scriptler SP'yi yeniden yazsa bile Turkce bozulmasin
 call :run_sql "%SQL10%" 14_fix_supplier_description_encoding
 
@@ -140,6 +148,13 @@ if exist "%PLATFORM_ZIP%" (
     call :extract_zip "%PLATFORM_ZIP%" "%PLATFORM_DIR%"
 ) else (
     echo UYARI: %PLATFORM_ZIP% yok - Platform atlandi.
+)
+
+if exist "%WEB_ZIP%" (
+    if not exist "%APP_DIR%" mkdir "%APP_DIR%"
+    call :extract_zip "%WEB_ZIP%" "%APP_DIR%"
+) else (
+    echo UYARI: %WEB_ZIP% yok - app klasoru atlandi.
 )
 
 echo [7/7] Servisler baslatiliyor (IIS varsa App Pool, yoksa eski surec)...
@@ -212,3 +227,5 @@ if exist "%~1" (
     echo UYARI: %~1 yok. SSMS ile %~2.sql calistirin.
 )
 exit /b 0
+
+

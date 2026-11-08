@@ -18,6 +18,7 @@ import * as DocumentPicker from 'expo-document-picker'
 import { readUriAsBase64 } from '@/lib/read-base64'
 import * as Print from 'expo-print'
 import * as Sharing from 'expo-sharing'
+import { openWebPrintPreview } from '@/lib/web-print-share'
 import {
   Phone,
   MapPin,
@@ -62,6 +63,7 @@ import {
   type Vehicle,
 } from '@/lib/types'
 import { TextField, TextArea, SelectField } from '@/components/form-field'
+import { ArrivalDateField, turkeyTodayIso } from '@/components/arrival-date-field'
 import { AppSheet, SheetActionList, SheetCancelButton } from '@/components/app-modal'
 import { KeyboardAwareScrollView } from '@/components/keyboard-aware-scroll'
 import { formatCurrency, formatDate, formatDateTime, formatTime } from '@/lib/format'
@@ -82,7 +84,9 @@ import {
   deleteWorkOrderImage,
   getCachedEntitlements,
   getShopPaymentInfo,
+  getStoredShopName,
   getSupplierLedger,
+  refreshVehicle,
   getWorkOrderHistory,
   getWorkOrderImages,
   listStockProducts,
@@ -90,6 +94,7 @@ import {
   listWorkOrderPayments,
   mapFuel,
   recordSupplierPayment,
+  matchStockLinesApi,
   scanInvoiceApi,
   uploadWorkOrderImage,
   type InvoiceScanLine,
@@ -105,6 +110,14 @@ import {
   type ServiceCatalogItem,
 } from '@/lib/service-catalog'
 import { scanRuhsat } from '@/lib/ai-scan'
+import { MatchBadge, PdfCodeFields, StockMatchSheet } from '@/components/stock-match-sheet'
+import {
+  applyPdfLineCodes,
+  matchStateFromResult,
+  suggestStockCodeFromRaw,
+  type StockMatchDecision,
+  type StockMatchState,
+} from '@/lib/stock-match'
 
 const ASSIGNABLE_ROLES = ['admin', 'usta']
 
@@ -162,18 +175,37 @@ function normalizePhoneForWhatsApp(phone: string): string {
   return `90${p}`
 }
 
-function buildSummaryText(vehicle: Vehicle): string {
+function resolveTotals(vehicle: Vehicle) {
   const activeProducts = vehicle.products.filter((p) => !p.returnedAt)
   const laborTotal = vehicle.laborTotal ?? vehicle.services.reduce((s, i) => s + i.price, 0)
   const partsTotal =
     vehicle.partsTotal ?? activeProducts.reduce((s, i) => s + i.price * i.quantity, 0)
-  const grandTotal = vehicle.grandTotal ?? laborTotal + partsTotal
+  const subtotal = Math.round((laborTotal + partsTotal) * 100) / 100
+  let discount = Number(vehicle.discount) || 0
+  // Bazı istemcilerde discount alanı gelmezse grandTotal farkından çıkar.
+  if (discount <= 0 && vehicle.grandTotal != null) {
+    const implied = Math.round((subtotal - Number(vehicle.grandTotal)) * 100) / 100
+    if (implied > 0.005) discount = implied
+  }
+  const grandTotal =
+    vehicle.grandTotal != null
+      ? Number(vehicle.grandTotal)
+      : Math.max(0, Math.round((subtotal - discount) * 100) / 100)
+  return { activeProducts, laborTotal, partsTotal, subtotal, discount, grandTotal }
+}
 
-  const lines: string[] = [
+function buildSummaryText(vehicle: Vehicle, shopName?: string | null): string {
+  const { activeProducts, laborTotal, partsTotal, subtotal, discount, grandTotal } =
+    resolveTotals(vehicle)
+  const shop = shopName?.trim()
+
+  const lines: string[] = []
+  if (shop) lines.push(shop.toLocaleUpperCase('tr-TR'), '')
+  lines.push(
     `${vehicle.plate} — ${vehicle.brand} ${vehicle.model}`,
     `Müşteri: ${vehicle.customer.name}`,
     `Durum: ${STATUS_LABELS[vehicle.status]}`,
-  ]
+  )
 
   if (vehicle.services.length > 0) {
     lines.push('', 'İşlemler:')
@@ -186,12 +218,11 @@ function buildSummaryText(vehicle: Vehicle): string {
     )
   }
 
-  lines.push(
-    '',
-    `İşçilik: ${formatCurrency(laborTotal)}`,
-    `Malzeme: ${formatCurrency(partsTotal)}`,
-    `Toplam: ${formatCurrency(grandTotal)}`,
-  )
+  lines.push('', `İşçilik: ${formatCurrency(laborTotal)}`, `Malzeme: ${formatCurrency(partsTotal)}`)
+  if (discount > 0) {
+    lines.push(`Ara toplam: ${formatCurrency(subtotal)}`, `İskonto: -${formatCurrency(discount)}`)
+  }
+  lines.push(`Toplam: ${formatCurrency(grandTotal)}`)
   return lines.join('\n')
 }
 
@@ -203,12 +234,11 @@ function escapeHtml(value: string): string {
     .replace(/"/g, '&quot;')
 }
 
-function buildSummaryHtml(vehicle: Vehicle): string {
-  const activeProducts = vehicle.products.filter((p) => !p.returnedAt)
-  const laborTotal = vehicle.laborTotal ?? vehicle.services.reduce((s, i) => s + i.price, 0)
-  const partsTotal =
-    vehicle.partsTotal ?? activeProducts.reduce((s, i) => s + i.price * i.quantity, 0)
-  const grandTotal = vehicle.grandTotal ?? laborTotal + partsTotal
+function buildSummaryHtml(vehicle: Vehicle, shopName?: string | null): string {
+  const { activeProducts, laborTotal, partsTotal, subtotal, discount, grandTotal } =
+    resolveTotals(vehicle)
+  const shop = shopName?.trim()
+  const shopUpper = shop ? shop.toLocaleUpperCase('tr-TR') : ''
 
   const serviceRows = vehicle.services
     .map(
@@ -223,12 +253,27 @@ function buildSummaryHtml(vehicle: Vehicle): string {
     )
     .join('')
 
+  const discountRows =
+    discount > 0
+      ? `<tr><td>Ara toplam</td><td class="right">${formatCurrency(subtotal)}</td></tr>
+    <tr><td>İskonto</td><td class="right discount">-${formatCurrency(discount)}</td></tr>`
+      : ''
+
   return `<!DOCTYPE html>
 <html lang="tr">
 <head>
 <meta charset="utf-8" />
 <style>
   body { font-family: -apple-system, Helvetica, Arial, sans-serif; color: #1a1a1a; padding: 24px; }
+  .shop-name {
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-align: center;
+    margin: 0 0 18px;
+    line-height: 1.2;
+    text-transform: uppercase;
+  }
   h1 { font-size: 20px; margin-bottom: 4px; }
   h2 { font-size: 14px; color: #555; margin-top: 24px; margin-bottom: 8px; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
@@ -236,10 +281,12 @@ function buildSummaryHtml(vehicle: Vehicle): string {
   .right { text-align: right; }
   .meta { font-size: 13px; color: #444; line-height: 1.6; }
   .totals td { font-size: 14px; padding: 4px 0; border-bottom: none; }
+  .totals .discount { color: #b45309; font-weight: 600; }
   .totals .grand { font-weight: 700; font-size: 16px; border-top: 2px solid #1a1a1a; padding-top: 8px; }
 </style>
 </head>
 <body>
+  ${shopUpper ? `<div class="shop-name">${escapeHtml(shopUpper)}</div>` : ''}
   <h1>${escapeHtml(vehicle.plate)} — ${escapeHtml(vehicle.brand)} ${escapeHtml(vehicle.model)}</h1>
   <div class="meta">
     Müşteri: ${escapeHtml(vehicle.customer.name)}<br/>
@@ -253,62 +300,39 @@ function buildSummaryHtml(vehicle: Vehicle): string {
   <table class="totals">
     <tr><td>İşçilik</td><td class="right">${formatCurrency(laborTotal)}</td></tr>
     <tr><td>Malzeme</td><td class="right">${formatCurrency(partsTotal)}</td></tr>
+    ${discountRows}
     <tr><td class="grand">Toplam</td><td class="right grand">${formatCurrency(grandTotal)}</td></tr>
   </table>
 </body>
 </html>`
 }
 
-function openPrintPreview(html: string) {
-  document.getElementById('ms-print-frame')?.remove()
+function openPrintPreview(html: string, plate?: string) {
+  openWebPrintPreview(html, {
+    title: 'İş emri önizleme',
+    filename: `is-emri-${(plate || 'belge').replace(/\s+/g, '')}.html`,
+  })
+}
 
-  const frame = document.createElement('iframe')
-  frame.id = 'ms-print-frame'
-  frame.setAttribute('title', 'İş emri önizleme')
-  frame.style.cssText =
-    'position:fixed;inset:0;width:100%;height:100%;border:0;background:#fff;z-index:2147483647;'
-  document.body.appendChild(frame)
-
-  const doc = frame.contentDocument
-  const win = frame.contentWindow
-  if (!doc || !win) {
-    frame.remove()
-    Alert.alert('Yazdırma', 'PDF önizlemesi açılamadı.')
-    return
+async function resolveVehicleForShare(vehicle: Vehicle): Promise<Vehicle> {
+  if (!vehicle.workOrderId) return vehicle
+  try {
+    return await refreshVehicle(vehicle.workOrderId)
+  } catch {
+    return vehicle
   }
-
-  const withActions = html.replace(
-    '</body>',
-    `<div class="noprint" style="position:sticky;bottom:0;display:flex;gap:8px;padding:12px 16px calc(12px + env(safe-area-inset-bottom, 0px));background:#fff;border-top:1px solid #e5e7eb;">
-      <button id="ms-print" type="button" style="flex:1;height:48px;border:0;border-radius:12px;background:#2f4a86;color:#fff;font-weight:700;font-size:16px;">PDF / Yazdır</button>
-      <button id="ms-close" type="button" style="flex:1;height:48px;border:0;border-radius:12px;background:#e8eaef;color:#2b3244;font-weight:700;font-size:16px;">Kapat</button>
-    </div>
-    <style>@media print { .noprint { display: none !important; } }</style>
-    </body>`,
-  )
-
-  const bind = () => {
-    doc.getElementById('ms-print')?.addEventListener('click', () => {
-      win.focus()
-      win.print()
-    })
-    doc.getElementById('ms-close')?.addEventListener('click', () => frame.remove())
-  }
-
-  doc.open()
-  doc.write(withActions)
-  doc.close()
-  if (doc.readyState === 'complete') bind()
-  else frame.addEventListener('load', bind, { once: true })
 }
 
 async function sharePdf(vehicle: Vehicle) {
+  const fresh = await resolveVehicleForShare(vehicle)
+  const shopName = await getStoredShopName()
+  const html = buildSummaryHtml(fresh, shopName)
   if (Platform.OS === 'web') {
-    openPrintPreview(buildSummaryHtml(vehicle))
+    openPrintPreview(html, fresh.plate)
     return
   }
   try {
-    const { uri } = await Print.printToFileAsync({ html: buildSummaryHtml(vehicle) })
+    const { uri } = await Print.printToFileAsync({ html })
     const canShare = await Sharing.isAvailableAsync()
     if (canShare) {
       await Sharing.shareAsync(uri, { mimeType: 'application/pdf', UTI: 'com.adobe.pdf' })
@@ -321,9 +345,19 @@ async function sharePdf(vehicle: Vehicle) {
 }
 
 async function shareAsText(vehicle: Vehicle) {
+  const fresh = await resolveVehicleForShare(vehicle)
+  const text = buildSummaryText(fresh, await getStoredShopName())
   if (Platform.OS === 'web') {
     try {
-      await navigator.clipboard.writeText(buildSummaryText(vehicle))
+      if (typeof navigator !== 'undefined' && navigator.share) {
+        await navigator.share({ text, title: fresh.plate })
+        return
+      }
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
       Alert.alert('Kopyalandı', 'İş özeti panoya kopyalandı.')
     } catch (e) {
       showError(e)
@@ -331,15 +365,16 @@ async function shareAsText(vehicle: Vehicle) {
     return
   }
   try {
-    await Share.share({ message: buildSummaryText(vehicle) })
+    await Share.share({ message: text })
   } catch (e) {
     showError(e)
   }
 }
 
 async function shareViaWhatsApp(vehicle: Vehicle) {
-  const text = buildSummaryText(vehicle)
-  const phone = normalizePhoneForWhatsApp(vehicle.customer.phone)
+  const fresh = await resolveVehicleForShare(vehicle)
+  const text = buildSummaryText(fresh, await getStoredShopName())
+  const phone = normalizePhoneForWhatsApp(fresh.customer.phone)
   const appUrl = `whatsapp://send?phone=${phone}&text=${encodeURIComponent(text)}`
   const webUrl = `https://wa.me/${phone}?text=${encodeURIComponent(text)}`
   try {
@@ -415,13 +450,16 @@ export function VehicleDetail({
   ) => Promise<WorkOrderPaymentResult>
   onDeletePayment: (paymentId: string) => Promise<WorkOrderPaymentResult>
   onUpdateDiscount: (amount: number) => Promise<WorkOrderPaymentResult>
-  onOpenNewVisit: (complaint?: string) => void
+  onOpenNewVisit: (complaint?: string, openedAt?: string) => void
   onDeleteWaiting?: () => Promise<void>
   onUpdateVehicle: (data: VehicleInfoPayload, opts?: { ruhsatUri?: string }) => Promise<void>
 }) {
   const serviceCatalog = catalogProp ?? defaultCatalog
   const [tab, setTab] = useState<Tab>('bilgiler')
   const [assignOpen, setAssignOpen] = useState(false)
+  const [newVisitOpen, setNewVisitOpen] = useState(false)
+  const [newVisitDate, setNewVisitDate] = useState(turkeyTodayIso)
+  const [newVisitComplaint, setNewVisitComplaint] = useState('')
   const [shareOpen, setShareOpen] = useState(false)
   const [payOpen, setPayOpen] = useState(false)
   const [ibanOpen, setIbanOpen] = useState(false)
@@ -434,21 +472,23 @@ export function VehicleDetail({
   const canAssign = !!currentUser && ASSIGNABLE_ROLES.includes(currentUser.role)
 
   function promptNewVisit() {
-    Alert.alert(
-      'Yeni Servis Kaydı',
-      'Bu araç için yeni bir servis kaydı (iş emri) açılsın mı?',
-      [
-        { text: 'İptal', style: 'cancel' },
-        { text: 'Aç', onPress: () => onOpenNewVisit() },
-      ],
-    )
+    setNewVisitDate(turkeyTodayIso())
+    setNewVisitComplaint('')
+    setNewVisitOpen(true)
+  }
+
+  function confirmNewVisit() {
+    const date = newVisitDate || turkeyTodayIso()
+    const complaint = newVisitComplaint.trim() || undefined
+    setNewVisitOpen(false)
+    onOpenNewVisit(complaint, date)
   }
 
   function handleStatusError(e: unknown) {
     if (e instanceof WorkOrderReopenBlockedError) {
       Alert.alert('Durum değiştirilemedi', e.message, [
         { text: 'İptal', style: 'cancel' },
-        { text: 'Yeni Servis Kaydı Aç', onPress: () => onOpenNewVisit() },
+        { text: 'Yeni Servis Kaydı Aç', onPress: () => promptNewVisit() },
       ])
     } else {
       showError(e)
@@ -584,10 +624,19 @@ export function VehicleDetail({
       >
         <View className="mx-4 mt-4 rounded-3xl border border-border bg-card px-4 py-4" style={cardShadow}>
           <View className="flex-row items-center justify-between gap-3">
-            <View className="rounded-lg bg-foreground px-3 py-1.5">
-              <Text className="font-mono text-base font-bold tracking-wide text-background">
-                {vehicle.plate}
-              </Text>
+            <View className="flex-row items-center gap-2">
+              <View className="rounded-lg bg-foreground px-3 py-1.5">
+                <Text className="font-mono text-base font-bold tracking-wide text-background">
+                  {vehicle.plate}
+                </Text>
+              </View>
+              {vehicle.visitNumber != null && vehicle.visitNumber > 1 ? (
+                <View className="rounded-md bg-secondary px-2.5 py-1.5">
+                  <Text className="text-xs font-extrabold text-secondary-foreground">
+                    {vehicle.visitNumber}. kez
+                  </Text>
+                </View>
+              ) : null}
             </View>
             <Pressable
               onPress={handleShare}
@@ -949,6 +998,31 @@ export function VehicleDetail({
         vehicle={vehicle}
         onClose={() => setShareOpen(false)}
       />
+
+      <AppSheet
+        visible={newVisitOpen}
+        onClose={() => setNewVisitOpen(false)}
+        title="Yeni Servis Kaydı"
+        subtitle={`${vehicle.plate} için yeni servis kaydı açılacak. Geçmiş tarihli geliş için tarihi değiştirin.`}
+      >
+        <View className="gap-3">
+          <ArrivalDateField value={newVisitDate} onChange={setNewVisitDate} />
+          <TextArea
+            label="Şikayet (isteğe bağlı)"
+            value={newVisitComplaint}
+            onChange={setNewVisitComplaint}
+            rows={3}
+            placeholder="Örn: Periyodik bakım"
+          />
+          <Pressable
+            onPress={confirmNewVisit}
+            className="h-12 items-center justify-center rounded-2xl bg-accent active:opacity-90"
+          >
+            <Text className="text-sm font-extrabold text-accent-foreground">Aç</Text>
+          </Pressable>
+          <SheetCancelButton onPress={() => setNewVisitOpen(false)} />
+        </View>
+      </AppSheet>
 
       <AppSheet
         visible={deleteOpen}
@@ -1452,9 +1526,28 @@ function PaymentSheet({
   const [supplierMethod, setSupplierMethod] = useState<'nakit' | 'kart' | 'havale'>('nakit')
   /** Tedarikçi tutarı elle değiştirildiyse müşteri tutarıyla senkron kesilir. */
   const [supplierAmountTouched, setSupplierAmountTouched] = useState(false)
+  /** Müşteri tutarı elle değiştirildiyse tedarikçi tutarıyla senkron kesilir. */
+  const [customerAmountTouched, setCustomerAmountTouched] = useState(false)
   const cap = Math.max(0, Math.round(maxAmount * 100) / 100)
   const canOfferSupplier = title !== 'Ödemeyi Düzenle' && jobSuppliers.length > 0
   const selectedSupplier = jobSuppliers.find((s) => s.id === supplierId) ?? jobSuppliers[0]
+
+  function supplierDefaultFor(customerAmountStr: string, supplier?: JobSupplierPayOption) {
+    const cust = Number(String(customerAmountStr).replace(',', '.')) || 0
+    const suggest = Math.max(0, supplier?.suggestAmount ?? 0)
+    // Tedarikçi varsayılanı = bu işteki alış borcu; müşteri tahsilatını aşmasın.
+    const val = Math.min(suggest > 0 ? suggest : cust, cust > 0 ? cust : suggest)
+    return val > 0 ? String(Math.round(val * 100) / 100) : ''
+  }
+
+  /** "Tedarikçiye de öde" açıkken müşteri varsayılanı = min(kalan, alış borcu).
+   *  Böylece 20.000 alış varken 22.850 kalanın tamamı tahsil edilmez. */
+  function customerDefaultWithSupplier(remainingSeed: number, supplier?: JobSupplierPayOption) {
+    const suggest = Math.max(0, supplier?.suggestAmount ?? 0)
+    const base = Math.max(0, remainingSeed)
+    const val = suggest > 0 ? Math.min(base, suggest) : base
+    return val > 0 ? String(Math.round(val * 100) / 100) : ''
+  }
 
   const wasVisibleRef = useRef(false)
   useEffect(() => {
@@ -1465,32 +1558,58 @@ function PaymentSheet({
     if (visible && !wasVisibleRef.current) {
       const seed = initialAmount ?? (remaining > 0 ? remaining : 0)
       const capped = Math.min(seed, cap)
-      const seedStr = capped > 0 ? String(capped) : ''
+      const first = jobSuppliers[0]
+      const autoSupplier =
+        title !== 'Ödemeyi Düzenle' && jobSuppliers.some((s) => s.suggestAmount > 0)
+      const seedStr = autoSupplier
+        ? customerDefaultWithSupplier(capped, first)
+        : capped > 0
+          ? String(capped)
+          : ''
       setAmount(seedStr)
       setMethod(initialMethod ?? 'nakit')
       setBusy(false)
       setSupplierAmountTouched(false)
-      const first = jobSuppliers[0]
-      setPaySupplierAlso(
-        title !== 'Ödemeyi Düzenle' &&
-          jobSuppliers.some((s) => s.suggestAmount > 0),
-      )
+      setCustomerAmountTouched(false)
+      setPaySupplierAlso(autoSupplier)
       setSupplierId(first?.id)
-      // Varsayılan: müşteriden alınan tutarın tamamı (alışa kilitleme)
-      setSupplierAmount(seedStr)
+      // Varsayılan tedarikçi ödemesi = alış borcu (müşteri kalanının tamamı değil)
+      setSupplierAmount(supplierDefaultFor(seedStr, first))
       setSupplierMethod(initialMethod ?? 'nakit')
     }
     wasVisibleRef.current = visible
   }, [visible, remaining, initialAmount, initialMethod, cap, jobSuppliers, title])
 
   function handleCustomerAmountChange(v: string) {
+    setCustomerAmountTouched(true)
     setAmount(v)
-    if (paySupplierAlso && !supplierAmountTouched) setSupplierAmount(v)
+    if (paySupplierAlso && !supplierAmountTouched) {
+      setSupplierAmount(supplierDefaultFor(v, selectedSupplier))
+    }
+  }
+
+  function handleSupplierAmountChange(v: string) {
+    setSupplierAmountTouched(true)
+    setSupplierAmount(v)
+    // Müşteri tutarı elle dokunulmadıysa tedarikçi tutarıyla hizala (kalanı aşma)
+    if (!customerAmountTouched) {
+      const sVal = Number(String(v).replace(',', '.')) || 0
+      if (sVal > 0) {
+        setAmount(String(Math.min(cap, Math.round(sVal * 100) / 100)))
+      }
+    }
   }
 
   function pickSupplier(id: string) {
     setSupplierId(id)
-    if (!supplierAmountTouched) setSupplierAmount(amount)
+    const next = jobSuppliers.find((s) => s.id === id)
+    if (!supplierAmountTouched) {
+      const nextSup = customerAmountTouched
+        ? supplierDefaultFor(amount, next)
+        : customerDefaultWithSupplier(cap, next)
+      setSupplierAmount(nextSup)
+      if (!customerAmountTouched) setAmount(nextSup)
+    }
   }
 
   async function submit() {
@@ -1566,7 +1685,7 @@ function PaymentSheet({
               key={m.key}
               onPress={() => {
                 setMethod(m.key)
-                setSupplierMethod(m.key)
+                if (paySupplierAlso) setSupplierMethod(m.key)
               }}
               className={cn(
                 'h-11 flex-1 items-center justify-center rounded-xl',
@@ -1592,7 +1711,16 @@ function PaymentSheet({
             onPress={() => {
               setPaySupplierAlso((v) => {
                 const next = !v
-                if (next && !supplierAmountTouched) setSupplierAmount(amount)
+                if (next) {
+                  // Açılınca varsayılan = alış borcu; müşteri de buna çekilir
+                  // (kullanıcı müşteri tutarını elle büyütmediyse).
+                  const aligned = customerAmountTouched
+                    ? supplierDefaultFor(amount, selectedSupplier)
+                    : customerDefaultWithSupplier(cap, selectedSupplier)
+                  if (!supplierAmountTouched) setSupplierAmount(aligned)
+                  if (!customerAmountTouched) setAmount(aligned)
+                  setSupplierMethod(method)
+                }
                 return next
               })
             }}
@@ -1611,7 +1739,7 @@ function PaymentSheet({
             <View className="flex-1">
               <Text className="text-sm font-extrabold text-foreground">Tedarikçiye de öde</Text>
               <Text className="mt-0.5 text-xs text-muted-foreground">
-                Yazılan tutarın tamamı tedarikçi carisine ödeme olarak işlenir
+                Varsayılan tutar bu işteki alış borcudur; müşteri tahsilatı da buna ayarlanır
               </Text>
             </View>
             <Truck size={18} color={colors.accent} />
@@ -1665,15 +1793,13 @@ function PaymentSheet({
               <TextField
                 label="Tedarikçiye ödenen (₺)"
                 value={supplierAmount}
-                onChange={(v) => {
-                  setSupplierAmountTouched(true)
-                  setSupplierAmount(v)
-                }}
+                onChange={handleSupplierAmountChange}
                 inputMode="numeric"
                 placeholder="0"
               />
               <Text className="text-xs text-muted-foreground">
-                Varsayılan müşteri tahsilatıyla aynıdır; istediğiniz tutarı yazabilirsiniz.
+                Varsayılan bu işteki alış borcudur. Daha fazla tahsilat almak için üstteki
+                müşteri tutarını artırın; fark işletmede kalır.
               </Text>
               <Text className="text-xs font-bold uppercase tracking-wide text-muted-foreground">
                 Ödeme yöntemi
@@ -1684,7 +1810,10 @@ function PaymentSheet({
                   return (
                     <Pressable
                       key={m.key}
-                      onPress={() => setSupplierMethod(m.key)}
+                      onPress={() => {
+                        setSupplierMethod(m.key)
+                        setMethod(m.key)
+                      }}
                       className={cn(
                         'h-10 flex-1 items-center justify-center rounded-xl border-2',
                         active ? 'border-accent bg-accent' : 'border-border bg-card',
@@ -2237,13 +2366,13 @@ function InfoTab({
         source === 'camera'
           ? await ImagePicker.launchCameraAsync({
               mediaTypes: ['images'],
-              quality: 0.7,
+              quality: 0.45,
               base64: true,
               exif: false,
             })
           : await ImagePicker.launchImageLibraryAsync({
               mediaTypes: ['images'],
-              quality: 0.7,
+              quality: 0.45,
               base64: true,
               exif: false,
               allowsMultipleSelection: false,
@@ -2953,7 +3082,8 @@ function ServiceTab({
       <PhotoGallery
         workOrderId={vehicle.workOrderId}
         imageType="diger"
-        heading="Diğer Fotoğraflar"
+        heading="İşlem fotoğrafları"
+        showAllOfType
         refreshKey={photosVersion}
       />
 
@@ -2970,6 +3100,7 @@ type PdfEditLine = InvoiceScanLine & {
   id: string
   selected: boolean
   salePrice: number
+  match?: StockMatchState
 }
 
 function newPdfLineId() {
@@ -2994,6 +3125,8 @@ function ProductTab({
   const [confirmId, setConfirmId] = useState<string | null>(null)
   const [returnConfirmId, setReturnConfirmId] = useState<string | null>(null)
   const [name, setName] = useState('')
+  const [productCode, setProductCode] = useState('')
+  const [codeHits, setCodeHits] = useState<StockProductLite[]>([])
   const [qty, setQty] = useState('1')
   const [price, setPrice] = useState('')
   const [source, setSource] = useState<'stok' | 'disaridan'>('stok')
@@ -3009,14 +3142,18 @@ function ProductTab({
   const [pdfSaving, setPdfSaving] = useState(false)
   const [pdfOpen, setPdfOpen] = useState(false)
   const [pdfLines, setPdfLines] = useState<PdfEditLine[]>([])
+  const [pdfMatchSheetId, setPdfMatchSheetId] = useState<string | null>(null)
   const [paySupplier, setPaySupplier] = useState<{
     id: string
     name: string
     suggestAmount: number
   } | null>(null)
+  const rematchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   function reset() {
     setName('')
+    setProductCode('')
+    setCodeHits([])
     setQty('1')
     setPrice('')
     setSource('stok')
@@ -3033,6 +3170,8 @@ function ProductTab({
   function startAdd() {
     setEditingId(null)
     setName('')
+    setProductCode('')
+    setCodeHits([])
     setQty('1')
     setPrice('')
     setSource('stok')
@@ -3049,6 +3188,7 @@ function ProductTab({
     setOpen(false)
     setEditingId(p.id)
     setName(p.name)
+    setProductCode(p.manufacturerCode || p.supplierCode || '')
     setQty(String(p.quantity))
     setPrice(String(p.price))
     setSource(p.source ?? 'stok')
@@ -3077,6 +3217,81 @@ function ProductTab({
     if (stockProductId) setStockProductId(undefined)
   }
 
+  function handleProductCodeChange(v: string) {
+    setProductCode(v)
+    if (stockProductId) setStockProductId(undefined)
+  }
+
+  function applyCodeHit(s: StockProductLite) {
+    setName(s.name)
+    setProductCode(s.code?.trim() || productCode)
+    setPrice(String(s.price))
+    setPurchasePrice(String(s.purchasePrice ?? s.price))
+    setSaleTouched(false)
+    setStockProductId(s.id)
+    setCodeHits([])
+  }
+
+  useEffect(() => {
+    const q = productCode.trim()
+    if (stockProductId || q.length < 2) {
+      setCodeHits([])
+      return
+    }
+    let active = true
+    const t = setTimeout(() => {
+      listStockProducts(q)
+        .then((rows) => {
+          if (!active) return
+          const norm = (s?: string) => (s || '').replace(/[\s\-_.]/g, '').toLowerCase()
+          const qn = norm(q)
+          const exact = rows.filter((r) => norm(r.code) === qn)
+          setCodeHits((exact.length ? exact : rows).slice(0, 5))
+        })
+        .catch(() => {
+          if (active) setCodeHits([])
+        })
+    }, 280)
+    return () => {
+      active = false
+      clearTimeout(t)
+    }
+  }, [productCode, stockProductId])
+
+  useEffect(() => {
+    if (source !== 'disaridan' || !supplierId || stockProductId || productCode.trim().length < 2) return
+    let active = true
+    const t = setTimeout(() => {
+      matchStockLinesApi(supplierId, [
+        { index: 0, name, rawCode: productCode.trim() },
+      ])
+        .then((results) => {
+          if (!active) return
+          const r = results[0]
+          const extra = (r?.candidates ?? []).map((c) => ({
+            id: c.stockId,
+            name: c.name,
+            price: c.price,
+            quantity: c.quantity,
+            code: c.code,
+          }))
+          if (extra.length === 0) return
+          setCodeHits((prev) => {
+            const seen = new Set(prev.map((p) => p.id))
+            return [...prev, ...extra.filter((e) => !seen.has(e.id))].slice(0, 5)
+          })
+          if (r?.status === 'exact' && extra[0] && !name.trim()) setName(extra[0].name)
+        })
+        .catch(() => {
+          /* katalog araması zaten gösteriliyor */
+        })
+    }, 400)
+    return () => {
+      active = false
+      clearTimeout(t)
+    }
+  }, [productCode, supplierId, source, stockProductId, name])
+
   async function pickAndScanPdf() {
     if (!supplierId) {
       Alert.alert('Tedarikçi', 'Önce tedarikçi seçin.')
@@ -3098,14 +3313,39 @@ function ProductTab({
         Alert.alert('PDF', 'PDF’den ürün satırı okunamadı.')
         return
       }
-      setPdfLines(
-        result.lines.map((l) => ({
+      const mapped: PdfEditLine[] = result.lines.map((l) => {
+        const codes = applyPdfLineCodes(l.name, l.code, l.brand)
+        return {
           ...l,
+          name: codes.name,
+          code: codes.rawCode,
+          brand: codes.brand ?? l.brand,
           id: newPdfLineId(),
           selected: true,
           salePrice: l.unitPrice,
-        })),
-      )
+          match: matchStateFromResult(undefined, codes.rawCode, codes.brand),
+        }
+      })
+      try {
+        const results = await matchStockLinesApi(
+          supplierId,
+          mapped.map((l, i) => ({ index: i, name: l.name, rawCode: l.code, brand: l.brand })),
+        )
+        const byIndex = new Map(results.map((r) => [r.index, r]))
+        setPdfLines(
+          mapped.map((l, i) => ({
+            ...l,
+            match: matchStateFromResult(byIndex.get(i), l.code, l.brand),
+          })),
+        )
+      } catch {
+        setPdfLines(
+          mapped.map((l) => ({
+            ...l,
+            match: matchStateFromResult(undefined, l.code, l.brand),
+          })),
+        )
+      }
       setPdfOpen(true)
     } catch (e) {
       showError(e)
@@ -3118,6 +3358,58 @@ function ProductTab({
     setPdfLines((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)))
   }
 
+  function decidePdfLine(id: string, decision: StockMatchDecision) {
+    setPdfLines((prev) =>
+      prev.map((l) => (l.id === id && l.match ? { ...l, match: { ...l.match, decision } } : l)),
+    )
+  }
+
+  function setPdfManufacturerCode(id: string, code: string) {
+    setPdfLines((prev) =>
+      prev.map((l) =>
+        l.id === id
+          ? {
+              ...l,
+              match: l.match
+                ? { ...l.match, manufacturerCode: code }
+                : matchStateFromResult(undefined, code, l.brand),
+            }
+          : l,
+      ),
+    )
+  }
+
+  function schedulePdfRematch(id: string, rawCode: string, lineName: string, brand?: string) {
+    if (!supplierId) return
+    if (rematchTimer.current) clearTimeout(rematchTimer.current)
+    rematchTimer.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const results = await matchStockLinesApi(supplierId, [
+            { index: 0, name: lineName, rawCode: rawCode || undefined, brand },
+          ])
+          const r = results[0]
+          setPdfLines((prev) =>
+            prev.map((l) => {
+              if (l.id !== id) return l
+              const next = matchStateFromResult(r, rawCode, brand)
+              return {
+                ...l,
+                match: {
+                  ...next,
+                  manufacturerCode: l.match?.manufacturerCode || next.manufacturerCode,
+                  rawCode: l.match?.rawCode || next.rawCode,
+                },
+              }
+            }),
+          )
+        } catch {
+          /* eşleştirme hatası satırı bozmasın */
+        }
+      })()
+    }, 400)
+  }
+
   async function savePdfLines(force = false) {
     if (!supplierId) return
     const toSave = pdfLines.filter((l) => l.selected && l.name.trim().length >= 2)
@@ -3126,28 +3418,42 @@ function ProductTab({
       return
     }
     setPdfSaving(true)
+    setPdfOpen(false)
+    setPdfMatchSheetId(null)
+    setOpen(false)
+    // Web Modal overlay'inin kalkması için kayıt öncesi unmount'u işle.
+    await new Promise((r) => setTimeout(r, Platform.OS === 'web' ? 50 : 0))
     try {
       for (const l of toSave) {
         const unit = Number(l.unitPrice) || 0
         const sale = l.salePrice > 0 ? Number(l.salePrice) : unit
+        const d = l.match?.decision
+        const consume = d?.kind === 'existing' && d.consumeStock
+        const matchedName = d?.kind === 'existing' ? d.name : l.name.trim()
         await onAdd(
           {
-            name: l.name.trim(),
+            name: matchedName,
             quantity: Math.max(1, l.quantity),
             price: sale,
-            source: 'disaridan',
-            supplierId,
-            supplierName: supplierName || undefined,
+            source: consume ? 'stok' : 'disaridan',
+            stockProductId: consume && d?.kind === 'existing' ? d.stockId : undefined,
+            supplierId: consume ? undefined : supplierId,
+            supplierName: consume ? undefined : supplierName || undefined,
             purchasePrice: unit,
+            supplierCode: l.match?.rawCode || l.code,
+            matchedStockProductId:
+              !consume && d?.kind === 'existing' ? d.stockId : undefined,
+            manufacturerCode: l.match?.manufacturerCode,
+            brand: l.brand,
           },
           force,
         )
       }
-      setPdfOpen(false)
       setPdfLines([])
       reset()
-      Alert.alert('Eklendi', `${toSave.length} ürün iş emrine eklendi.`)
     } catch (e) {
+      setPdfOpen(true)
+      setOpen(true)
       if (!force && e instanceof WorkOrderCompletedError) {
         Alert.alert('Bu iş tamamlandı', 'Bu işe ürün eklemek istediğinize emin misiniz?', [
           { text: 'İptal', style: 'cancel' },
@@ -3175,6 +3481,10 @@ function ProductTab({
       supplierId: source === 'disaridan' ? supplierId : undefined,
       supplierName: source === 'disaridan' ? supplierName : undefined,
       purchasePrice: purchaseNum,
+      supplierCode: productCode.trim() || undefined,
+      manufacturerCode: productCode.trim() || undefined,
+      matchedStockProductId:
+        source === 'disaridan' && stockProductId ? stockProductId : undefined,
     }
     try {
       if (editingId) {
@@ -3203,7 +3513,10 @@ function ProductTab({
       Alert.alert('Eksik Bilgi', 'Lütfen ürün/parça adı alanını doldurun.')
       return
     }
-    if (source === 'disaridan' && !supplierId) return
+    if (source === 'disaridan' && !supplierId) {
+      Alert.alert('Tedarikçi seçin', 'Dışarıdan alım için önce tedarikçi seçin, sonra kaydedin.')
+      return
+    }
     const priceNum = Number(price) || 0
     if (priceNum === 0) {
       Alert.alert('Fiyat girilmedi', 'Fiyat girmeden kaydetmek istediğinize emin misiniz?', [
@@ -3216,6 +3529,9 @@ function ProductTab({
   }
 
   const canSave = name.trim().length > 0 && (source === 'stok' || !!supplierId)
+  const pdfMatchLine = pdfMatchSheetId
+    ? pdfLines.find((x) => x.id === pdfMatchSheetId)
+    : undefined
 
   const formFields = (
     <>
@@ -3223,6 +3539,8 @@ function ProductTab({
         <Pressable
           onPress={() => {
             setSource('stok')
+            setSupplierId(undefined)
+            setSupplierName('')
             setSaleTouched(false)
           }}
           className={cn('flex-1 rounded-xl py-2.5', source === 'stok' && 'bg-card')}
@@ -3272,10 +3590,12 @@ function ProductTab({
         <StockCatalogPicker
           onPick={(s) => {
             setName(s.name)
+            setProductCode(s.code?.trim() || '')
             setPrice(String(s.price))
             setPurchasePrice(String(s.purchasePrice ?? s.price))
             setSaleTouched(false)
             setStockProductId(s.id)
+            setCodeHits([])
           }}
         />
       )}
@@ -3286,6 +3606,7 @@ function ProductTab({
             selectedId={supplierId}
             selectedName={supplierName}
             onSelect={(s) => {
+              setSource('disaridan')
               setSupplierId(s.id)
               setSupplierName(s.name)
             }}
@@ -3327,6 +3648,39 @@ function ProductTab({
         </>
       )}
 
+      <TextField
+        label="Ürün Kodu (isteğe bağlı)"
+        value={productCode}
+        onChange={handleProductCodeChange}
+        placeholder="Örn. APS 14"
+      />
+      {codeHits.length > 0 ? (
+        <View className="overflow-hidden rounded-xl border border-primary/25 bg-primary/5">
+          <Text className="px-3 pt-2 text-[11px] font-bold text-primary">
+            Stokta bu koda yakın ürün — dokunarak seç
+          </Text>
+          {codeHits.map((s, idx) => (
+            <Pressable
+              key={s.id}
+              onPress={() => applyCodeHit(s)}
+              className={cn(
+                'flex-row items-center justify-between px-3 py-2.5',
+                idx < codeHits.length - 1 && 'border-b border-border',
+              )}
+            >
+              <View className="min-w-0 flex-1">
+                <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                  {s.name}
+                </Text>
+                {s.code ? (
+                  <Text className="text-[11px] font-bold text-muted-foreground">{s.code}</Text>
+                ) : null}
+              </View>
+              <Text className="text-xs font-bold text-muted-foreground">{formatCurrency(s.price)}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
       <TextField
         label="Ürün / Parça Adı"
         value={name}
@@ -3449,9 +3803,26 @@ function ProductTab({
             ? `${supplierName} · seçili satırlar iş emrine ve cariye yazılır`
             : 'Seçili satırlar iş emrine eklenir'
         }
+        footer={
+          <>
+            <Pressable
+              onPress={() => void savePdfLines()}
+              disabled={pdfSaving}
+              className="h-12 items-center justify-center rounded-xl bg-primary active:opacity-90"
+            >
+              {pdfSaving ? (
+                <ActivityIndicator color={colors.primaryForeground} />
+              ) : (
+                <Text className="text-sm font-extrabold text-primary-foreground">
+                  Seçilenleri Ekle
+                </Text>
+              )}
+            </Pressable>
+            <SheetCancelButton onPress={() => !pdfSaving && setPdfOpen(false)} />
+          </>
+        }
       >
-        <ScrollView style={{ maxHeight: 440 }} keyboardShouldPersistTaps="handled">
-          <View className="gap-3">
+        <View className="gap-3">
             {pdfLines.map((l, index) => (
               <View
                 key={l.id}
@@ -3473,12 +3844,43 @@ function ProductTab({
                   </View>
                   <Text className="text-sm font-bold text-foreground">Satır {index + 1}</Text>
                 </Pressable>
+                <PdfCodeFields
+                  rawCode={l.match?.rawCode || l.code || ''}
+                  stockCode={l.match?.manufacturerCode || ''}
+                  onRawCode={(v) => {
+                    updatePdfLine(l.id, {
+                      code: v,
+                      match: l.match
+                        ? {
+                            ...l.match,
+                            rawCode: v,
+                            manufacturerCode: suggestStockCodeFromRaw(v, l.brand) || v,
+                          }
+                        : matchStateFromResult(undefined, v, l.brand),
+                    })
+                    schedulePdfRematch(l.id, v, l.name, l.brand)
+                  }}
+                  onStockCode={(v) => {
+                    setPdfManufacturerCode(l.id, v)
+                    schedulePdfRematch(l.id, v || l.code || '', l.name, l.brand)
+                  }}
+                />
                 <TextField
                   label="Ürün adı"
                   value={l.name}
                   onChange={(v) => updatePdfLine(l.id, { name: v })}
                   placeholder="Parça adı"
                 />
+                {l.match ? (
+                  <MatchBadge
+                    match={l.match}
+                    mode="workorder"
+                    onPress={() => setPdfMatchSheetId(l.id)}
+                  />
+                ) : null}
+                {l.warning ? (
+                  <Text className="mb-2 text-[11px] font-semibold text-amber-800">{l.warning}</Text>
+                ) : null}
                 <View className="mt-2 flex-row gap-2">
                   <TextField
                     label="Adet"
@@ -3520,22 +3922,19 @@ function ProductTab({
               </View>
             ))}
           </View>
-        </ScrollView>
-        <Pressable
-          onPress={() => void savePdfLines()}
-          disabled={pdfSaving}
-          className="mt-4 h-12 items-center justify-center rounded-xl bg-primary active:opacity-90"
-        >
-          {pdfSaving ? (
-            <ActivityIndicator color={colors.primaryForeground} />
-          ) : (
-            <Text className="text-sm font-extrabold text-primary-foreground">
-              Seçilenleri Ekle
-            </Text>
-          )}
-        </Pressable>
-        <SheetCancelButton onPress={() => setPdfOpen(false)} />
       </AppSheet>
+
+      {pdfMatchLine?.match ? (
+        <StockMatchSheet
+          visible
+          onClose={() => setPdfMatchSheetId(null)}
+          lineName={pdfMatchLine.name}
+          match={pdfMatchLine.match}
+          mode="workorder"
+          onDecide={(d) => decidePdfLine(pdfMatchLine.id, d)}
+          onManufacturerCodeChange={(c) => setPdfManufacturerCode(pdfMatchLine.id, c)}
+        />
+      ) : null}
 
       <SupplierPayFromJobSheet
         target={paySupplier}
@@ -3732,9 +4131,16 @@ function StockCatalogPicker({ onPick }: { onPick: (s: StockProductLite) => void 
             >
               <View className="min-w-0 flex-1 flex-row items-center gap-2">
                 <Package size={14} color={colors.mutedForeground} />
-                <Text className="flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
-                  {s.name}
-                </Text>
+                <View className="min-w-0 flex-1">
+                  <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                    {s.name}
+                  </Text>
+                  {s.code ? (
+                    <Text className="text-[11px] font-bold text-muted-foreground" numberOfLines={1}>
+                      {s.code}
+                    </Text>
+                  ) : null}
+                </View>
               </View>
               <Text className="text-xs font-bold text-muted-foreground">
                 {formatCurrency(s.price)} · {s.quantity} adet
@@ -4002,6 +4408,11 @@ function ProductRow({
         </View>
         <View className="min-w-0 flex-1">
           <Text className="text-sm font-bold text-foreground">{product.name}</Text>
+          {product.manufacturerCode || product.supplierCode ? (
+            <Text className="mt-0.5 text-[11px] font-bold text-muted-foreground">
+              Kod: {product.manufacturerCode || product.supplierCode}
+            </Text>
+          ) : null}
           <Text className="mt-0.5 text-xs text-muted-foreground">
             {product.quantity} adet
             {isExternal ? ' · Dışarıdan temin' : ' · Stoktan'}
@@ -4232,6 +4643,18 @@ function PhotoPicker({
   )
 }
 
+function imageLinkId(
+  row: WorkOrderImage & { ComplaintId?: string; ServiceId?: string },
+  key: 'complaint' | 'service',
+) {
+  const v = key === 'complaint' ? (row.complaintId ?? row.ComplaintId) : (row.serviceId ?? row.ServiceId)
+  return (v ?? '').toString().toLowerCase()
+}
+
+function sameLinkId(a?: string, b?: string) {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase()
+}
+
 function PhotoGallery({
   workOrderId,
   imageType,
@@ -4240,6 +4663,7 @@ function PhotoGallery({
   heading,
   refreshKey = 0,
   editable = false,
+  showAllOfType = false,
 }: {
   workOrderId: string
   imageType: string
@@ -4253,6 +4677,8 @@ function PhotoGallery({
   refreshKey?: number
   /** true ise her fotoğrafın üzerinde silme (X) rozeti gösterilir. */
   editable?: boolean
+  /** true ise bu tipteki tüm fotoğraflar (şikayete bağlı olanlar hariç) gösterilir. */
+  showAllOfType?: boolean
 }) {
   const [images, setImages] = useState<WorkOrderImage[]>([])
   const [loaded, setLoaded] = useState(false)
@@ -4289,10 +4715,12 @@ function PhotoGallery({
         if (!active) return
         const byType = rows.filter((r) => r.imageType === imageType)
         const filtered = complaintId
-          ? byType.filter((r) => r.complaintId === complaintId)
+          ? byType.filter((r) => sameLinkId(imageLinkId(r, 'complaint'), complaintId))
           : serviceId
-            ? byType.filter((r) => r.serviceId === serviceId)
-            : byType.filter((r) => !r.complaintId && !r.serviceId)
+            ? byType.filter((r) => sameLinkId(imageLinkId(r, 'service'), serviceId))
+            : showAllOfType
+              ? byType.filter((r) => !imageLinkId(r, 'complaint'))
+              : byType.filter((r) => !imageLinkId(r, 'complaint') && !imageLinkId(r, 'service'))
         setImages(filtered)
       })
       .catch(() => {
@@ -4304,7 +4732,7 @@ function PhotoGallery({
     return () => {
       active = false
     }
-  }, [workOrderId, imageType, complaintId, serviceId, refreshKey])
+  }, [workOrderId, imageType, complaintId, serviceId, refreshKey, showAllOfType])
 
   if (!loaded || images.length === 0) return null
 

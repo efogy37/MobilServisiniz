@@ -14,9 +14,9 @@ param(
     [string]$BaseDir = ""
 )
 
-if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+if (-not $BaseDir) { $BaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\inetpub\wwwroot\mobilservisiniz" } }
 
-$pools = @("OtoServisApiPool", "OtoServisAdminPool", "OtoServisPlatformPool")
+$pools = @("OtoServisApiPool", "OtoServisAdminPool", "OtoServisPlatformPool", "OtoServisWebPool", "OtoServisSitePool")
 $legacy = @(
     @{ Name = "OtoServis.Api";      Port = 5280; Path = (Join-Path $BaseDir "api\OtoServis.Api.dll") },
     @{ Name = "OtoServis.Admin";    Port = 5281; Path = (Join-Path $BaseDir "admin\OtoServis.Admin.dll") },

@@ -4,17 +4,17 @@
     ViewData["Title"] = "Servisler";
     var q = ViewBag.Search as string;
 }
-<div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-    <form method="get" class="d-flex gap-2 flex-grow-1" style="max-width:420px">
-        <input type="search" name="q" value="@q" class="form-control" placeholder="Ad, kod, şehir..." />
-        <button type="submit" class="btn btn-outline-primary">Ara</button>
+<div class="d-flex flex-column flex-sm-row flex-wrap justify-content-between align-items-stretch align-items-sm-center gap-2 gap-sm-3 mb-4">
+    <form method="get" class="d-flex gap-2 flex-grow-1 w-100" style="max-width:420px">
+        <input type="search" name="q" value="@q" class="form-control" placeholder="Ad, kod, şehir..." enterkeyhint="search" />
+        <button type="submit" class="btn btn-outline-primary flex-shrink-0">Ara</button>
     </form>
-    <a asp-action="Create" class="btn text-white fw-semibold" style="background:#2f4a86">+ Yeni Servis</a>
+    <a asp-action="Create" class="btn btn-mobile-block text-white fw-semibold" style="background:#2f4a86">+ Yeni Servis</a>
 </div>
 
 <div class="card border-0 shadow-sm">
     <div class="table-responsive">
-        <table class="table table-hover align-middle mb-0">
+        <table class="table table-hover align-middle mb-0 table-stack">
             <thead class="table-light">
             <tr>
                 <th>Servis</th>
@@ -36,13 +36,13 @@
                 foreach (var s in Model)
                 {
                     <tr>
-                        <td>
+                        <td class="cell-main">
                             <div class="fw-semibold">@s.Name</div>
                             <div class="small text-muted">@(s.City ?? "-")</div>
                         </td>
-                        <td><code>@s.TenantCode</code></td>
-                        <td>@s.PlanLabel</td>
-                        <td>
+                        <td data-label="Kod"><code>@s.TenantCode</code></td>
+                        <td data-label="Plan">@s.PlanLabel</td>
+                        <td data-label="Lisans">
                             <div>@LicenseHelper.TypeLabel(s.LicenseType)</div>
                             <div class="small @(s.LicenseStatus == "expired" ? "text-danger fw-semibold" : s.LicenseStatus == "warning" ? "text-warning fw-semibold" : "text-muted")">
                                 @LicenseHelper.StatusLabel(s.LicenseStatus, s.DaysRemaining)
@@ -52,12 +52,12 @@
                                 }
                             </div>
                         </td>
-                        <td>
+                        <td data-label="Kullanıcı">
                             <span class="@(s.EffectiveMaxUsers.HasValue && s.ActiveUsers >= s.EffectiveMaxUsers ? "text-danger fw-bold" : "")">
                                 @s.ActiveUsers / @(s.EffectiveMaxUsers?.ToString() ?? "∞")
                             </span>
                         </td>
-                        <td>
+                        <td data-label="Durum">
                             @if (s.IsActive)
                             {
                                 <span class="badge text-bg-success">Aktif</span>
@@ -67,7 +67,7 @@
                                 <span class="badge text-bg-secondary">Pasif</span>
                             }
                         </td>
-                        <td class="text-end">
+                        <td class="text-end cell-actions">
                             <a asp-action="Details" asp-route-id="@s.Id" class="btn btn-sm btn-outline-primary">Yönet</a>
                         </td>
                     </tr>

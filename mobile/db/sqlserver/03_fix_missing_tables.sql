@@ -17,7 +17,7 @@ BEGIN
         brand_id     uniqueidentifier NULL,
         model_id     uniqueidentifier NULL,
         plate        nvarchar(20)     NOT NULL,
-        plate_norm   AS (CONVERT(nvarchar(20), UPPER(REPLACE(plate, N' ', N'')))) PERSISTED,
+        plate_norm   AS (CAST(UPPER(REPLACE(plate, N' ', N'')) AS nvarchar(20))) PERSISTED,
         brand        nvarchar(60)     NOT NULL CONSTRAINT DF_vehicles_brand DEFAULT N'',
         model        nvarchar(80)     NOT NULL CONSTRAINT DF_vehicles_model DEFAULT N'',
         model_year   smallint         NULL,
@@ -40,7 +40,7 @@ BEGIN
         CONSTRAINT CK_vehicles_year CHECK (model_year IS NULL OR model_year BETWEEN 1900 AND 2100),
         CONSTRAINT CK_vehicles_mileage CHECK (mileage IS NULL OR mileage >= 0)
     );
-    CREATE UNIQUE INDEX UX_vehicles_plate ON dbo.vehicles(shop_id, plate_norm);
+    CREATE UNIQUE INDEX UX_vehicles_plate ON dbo.vehicles(shop_id, plate_norm) WHERE is_active = 1;
     CREATE INDEX IX_vehicles_shop ON dbo.vehicles(shop_id);
     CREATE INDEX IX_vehicles_customer ON dbo.vehicles(customer_id);
     PRINT N'vehicles tablosu oluşturuldu.';

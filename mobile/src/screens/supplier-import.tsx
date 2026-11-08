@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
@@ -9,7 +9,7 @@ import {
 } from 'react-native'
 import * as DocumentPicker from 'expo-document-picker'
 import { readUriAsBase64 } from '@/lib/read-base64'
-import { ArrowLeft, Check, FileText, Keyboard, Plus, Trash2, Truck } from 'lucide-react-native'
+import { AlertTriangle, ArrowLeft, Check, FileText, Keyboard, Plus, Trash2, Truck } from 'lucide-react-native'
 import { cn } from '@/lib/utils'
 import {
   STOCK_CATEGORY_LABELS,
@@ -21,9 +21,19 @@ import { KeyboardAwareScrollView } from '@/components/keyboard-aware-scroll'
 import { formatCurrency } from '@/lib/format'
 import { colors } from '@/lib/theme'
 import { cardShadow } from '@/components/vehicle-card'
+import { MatchBadge, PdfCodeFields, StockMatchSheet } from '@/components/stock-match-sheet'
+import {
+  applyPdfLineCodes,
+  isDecided,
+  matchStateFromResult,
+  suggestStockCodeFromRaw,
+  type StockMatchDecision,
+  type StockMatchState,
+} from '@/lib/stock-match'
 import {
   importPurchaseApi,
   listSuppliers,
+  matchStockLinesApi,
   scanInvoiceApi,
   type InvoiceScanLine,
 } from '@/lib/api'
@@ -34,6 +44,8 @@ type EditLine = InvoiceScanLine & {
   selected: boolean
   salePrice: number
   category: StockCategory
+  /** PDF'den geldiyse stok eşleştirme durumu; manuel satırda yok */
+  match?: StockMatchState
 }
 
 const categoryOptions = (Object.keys(STOCK_CATEGORY_LABELS) as StockCategory[]).map((key) => ({
@@ -75,6 +87,10 @@ export function SupplierImport({
   const [documentDate, setDocumentDate] = useState('')
   const [lines, setLines] = useState<EditLine[]>([])
   const [error, setError] = useState('')
+  const [scanInfo, setScanInfo] = useState<{ supplierName?: string; grandTotal?: number; warning?: string } | null>(null)
+  const [matching, setMatching] = useState(false)
+  const [matchSheetId, setMatchSheetId] = useState<string | null>(null)
+  const rematchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     let active = true
@@ -99,6 +115,95 @@ export function SupplierImport({
     () => selectedLines.reduce((sum, l) => sum + l.unitPrice * l.quantity, 0),
     [selectedLines],
   )
+  /** PDF'den gelen ama henüz eşleştirme kararı verilmemiş seçili satırlar */
+  const undecidedLines = useMemo(
+    () => selectedLines.filter((l) => l.match && !isDecided(l.match)),
+    [selectedLines],
+  )
+  const matchSheetLine = matchSheetId ? lines.find((l) => l.id === matchSheetId) ?? null : null
+
+  async function runMatching(mapped: EditLine[]) {
+    if (!supplierId || mapped.length === 0) return mapped
+    setMatching(true)
+    try {
+      const results = await matchStockLinesApi(
+        supplierId,
+        mapped.map((l, i) => ({ index: i, name: l.name, rawCode: l.code, brand: l.brand })),
+      )
+      const byIndex = new Map(results.map((r) => [r.index, r]))
+      return mapped.map((l, i) => ({
+        ...l,
+        match: matchStateFromResult(byIndex.get(i), l.code, l.brand),
+      }))
+    } catch {
+      // Eşleştirme servisi çalışmazsa satırlar yine de düzenlenebilir; kullanıcı karar verir
+      return mapped.map((l) => ({ ...l, match: matchStateFromResult(undefined, l.code, l.brand) }))
+    } finally {
+      setMatching(false)
+    }
+  }
+
+  function decideLine(id: string, decision: StockMatchDecision) {
+    setLines((prev) =>
+      prev.map((l) => (l.id === id && l.match ? { ...l, match: { ...l.match, decision } } : l)),
+    )
+  }
+
+  function setManufacturerCode(id: string, code: string) {
+    setLines((prev) =>
+      prev.map((l) =>
+        l.id === id
+          ? {
+              ...l,
+              match: l.match
+                ? { ...l.match, manufacturerCode: code }
+                : matchStateFromResult(undefined, code, l.brand),
+            }
+          : l,
+      ),
+    )
+  }
+
+  function scheduleRematch(id: string, rawCode: string, lineName: string, brand?: string) {
+    if (!supplierId) return
+    if (rematchTimer.current) clearTimeout(rematchTimer.current)
+    rematchTimer.current = setTimeout(() => {
+      void (async () => {
+        try {
+          const results = await matchStockLinesApi(supplierId, [
+            { index: 0, name: lineName, rawCode: rawCode || undefined, brand },
+          ])
+          const r = results[0]
+          setLines((prev) =>
+            prev.map((l) => {
+              if (l.id !== id) return l
+              const next = matchStateFromResult(r, rawCode, brand)
+              return {
+                ...l,
+                match: {
+                  ...next,
+                  manufacturerCode: l.match?.manufacturerCode || next.manufacturerCode,
+                  rawCode: l.match?.rawCode || next.rawCode,
+                },
+              }
+            }),
+          )
+        } catch {
+          /* eşleştirme hatası satırı bozmasın */
+        }
+      })()
+    }, 400)
+  }
+
+  function confirmAllUndecidedAsNew() {
+    setLines((prev) =>
+      prev.map((l) =>
+        l.selected && l.match && !l.match.decision && l.match.status !== 'multiple'
+          ? { ...l, match: { ...l.match, decision: { kind: 'new' } } }
+          : l,
+      ),
+    )
+  }
 
   async function pickAndScanPdf() {
     if (!supplierId) {
@@ -124,15 +229,27 @@ export function SupplierImport({
       }
       if (result.documentNo) setDocumentNo((prev) => prev || result.documentNo || '')
       if (result.documentDate) setDocumentDate((prev) => prev || result.documentDate || '')
-      const mapped = result.lines.map((l) => ({
-        ...l,
-        id: uid(),
-        selected: true,
-        salePrice: l.unitPrice,
-        category: 'diger' as StockCategory,
-      }))
+      setScanInfo({
+        supplierName: result.supplierName,
+        grandTotal: result.grandTotal,
+        warning: result.warning,
+      })
+      const mapped: EditLine[] = result.lines.map((l) => {
+        const codes = applyPdfLineCodes(l.name, l.code, l.brand)
+        return {
+          ...l,
+          name: codes.name,
+          code: codes.rawCode,
+          brand: codes.brand ?? l.brand,
+          id: uid(),
+          selected: true,
+          salePrice: l.unitPrice,
+          category: 'diger' as StockCategory,
+        }
+      })
+      const matched = await runMatching(mapped)
       // Dolu satır varsa PDF sonuçlarını ekle; yoksa listeyi değiştir
-      setLines((prev) => (prev.some((p) => p.name.trim()) ? [...prev, ...mapped] : mapped))
+      setLines((prev) => (prev.some((p) => p.name.trim()) ? [...prev, ...matched] : matched))
       setStep('review')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'PDF okunamadı.')
@@ -173,18 +290,33 @@ export function SupplierImport({
       Alert.alert('Satır yok', 'En az bir ürün adı ve fiyat girin.')
       return
     }
+    const pending = toSave.filter((l) => l.match && !isDecided(l.match))
+    if (pending.length > 0) {
+      Alert.alert(
+        'Eşleştirme bekliyor',
+        `${pending.length} satır için stok eşleştirme kararı verilmedi. Satıra dokunup mevcut ürünü seçin veya "yeni ürün" olarak onaylayın.`,
+      )
+      return
+    }
     setSaving(true)
     setError('')
     try {
       const res = await importPurchaseApi(
         supplierId,
-        toSave.map((l) => ({
-          name: l.name.trim(),
-          quantity: Math.max(1, l.quantity),
-          unitPrice: l.unitPrice,
-          salePrice: l.salePrice > 0 ? l.salePrice : l.unitPrice,
-          category: l.category,
-        })),
+        toSave.map((l) => {
+          const d = l.match?.decision
+          return {
+            name: l.name.trim(),
+            quantity: Math.max(1, l.quantity),
+            unitPrice: l.unitPrice,
+            salePrice: l.salePrice > 0 ? l.salePrice : l.unitPrice,
+            category: l.category,
+            code: l.match?.rawCode || l.code || undefined,
+            stockProductId: d?.kind === 'existing' ? d.stockId : undefined,
+            manufacturerCode: l.match?.manufacturerCode?.trim() || undefined,
+            brand: l.brand,
+          }
+        }),
         documentNo || undefined,
         documentDate || undefined,
       )
@@ -360,7 +492,49 @@ export function SupplierImport({
                 {[documentNo && `Evrak ${documentNo}`, documentDate].filter(Boolean).join(' · ')}
               </Text>
             )}
+            {scanInfo?.supplierName || scanInfo?.grandTotal ? (
+              <Text className="mt-1 text-xs text-muted-foreground">
+                {[
+                  scanInfo.supplierName && `Fatura: ${scanInfo.supplierName}`,
+                  scanInfo.grandTotal != null && `Fatura toplamı ${formatCurrency(scanInfo.grandTotal)} (KDV dahil)`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ')}
+              </Text>
+            ) : null}
+            {scanInfo?.warning ? (
+              <View className="mt-2 flex-row items-start gap-2 rounded-xl bg-amber-100 px-3 py-2">
+                <AlertTriangle size={14} color="#92400e" />
+                <Text className="flex-1 text-xs font-semibold text-amber-800">{scanInfo.warning}</Text>
+              </View>
+            ) : null}
           </View>
+
+          {matching ? (
+            <View className="mt-3 flex-row items-center gap-2 rounded-2xl border border-border bg-card px-4 py-3">
+              <ActivityIndicator color={colors.primary} />
+              <Text className="text-sm font-semibold text-muted-foreground">Stokla eşleştiriliyor…</Text>
+            </View>
+          ) : undecidedLines.length > 0 ? (
+            <View className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
+              <Text className="text-sm font-bold text-amber-900">
+                {undecidedLines.length} satır stok eşleştirmesi bekliyor
+              </Text>
+              <Text className="mt-1 text-xs text-amber-800">
+                Satırdaki rozete dokunup mevcut ürünü seçin. Stokta olmayanları toplu onaylayabilirsiniz.
+              </Text>
+              {undecidedLines.some((l) => l.match?.status !== 'multiple') && (
+                <Pressable
+                  onPress={confirmAllUndecidedAsNew}
+                  className="mt-3 h-11 items-center justify-center rounded-xl bg-amber-600"
+                >
+                  <Text className="text-sm font-extrabold text-white">
+                    Eşleşmeyen {undecidedLines.filter((l) => l.match?.status !== 'multiple').length} satırı yeni stok olarak oluştur
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+          ) : null}
 
           <View className="mt-3 flex-row gap-2">
             <TextField
@@ -410,6 +584,27 @@ export function SupplierImport({
                     <Trash2 size={16} color={colors.destructive} />
                   </Pressable>
                 </View>
+                <PdfCodeFields
+                  rawCode={l.match?.rawCode || l.code || ''}
+                  stockCode={l.match?.manufacturerCode || ''}
+                  onRawCode={(v) => {
+                    updateLine(l.id, {
+                      code: v,
+                      match: l.match
+                        ? {
+                            ...l.match,
+                            rawCode: v,
+                            manufacturerCode: suggestStockCodeFromRaw(v, l.brand) || v,
+                          }
+                        : matchStateFromResult(undefined, v, l.brand),
+                    })
+                    scheduleRematch(l.id, v, l.name, l.brand)
+                  }}
+                  onStockCode={(v) => {
+                    setManufacturerCode(l.id, v)
+                    scheduleRematch(l.id, v || l.code || '', l.name, l.brand)
+                  }}
+                />
                 <TextField
                   label="Ürün adı"
                   value={l.name}
@@ -417,6 +612,18 @@ export function SupplierImport({
                   placeholder="Parça / ürün adı"
                   required
                 />
+                {l.match ? (
+                  <MatchBadge
+                    match={l.match}
+                    onPress={() => setMatchSheetId(l.id)}
+                  />
+                ) : null}
+                {l.warning ? (
+                  <View className="mb-2 flex-row items-start gap-2 rounded-lg bg-amber-50 px-2 py-1.5">
+                    <AlertTriangle size={12} color="#92400e" />
+                    <Text className="flex-1 text-[11px] font-semibold text-amber-800">{l.warning}</Text>
+                  </View>
+                ) : null}
                 <View className="mt-2 flex-row gap-2">
                   <View className="flex-1">
                     <TextField
@@ -483,10 +690,18 @@ export function SupplierImport({
 
           <Pressable
             onPress={handleSave}
-            disabled={saving || selectedLines.filter((l) => l.name.trim().length >= 2).length === 0}
+            disabled={
+              saving ||
+              matching ||
+              undecidedLines.length > 0 ||
+              selectedLines.filter((l) => l.name.trim().length >= 2).length === 0
+            }
             className={cn(
               'mt-5 h-14 items-center justify-center rounded-xl bg-accent',
-              (saving || selectedLines.filter((l) => l.name.trim().length >= 2).length === 0) &&
+              (saving ||
+                matching ||
+                undecidedLines.length > 0 ||
+                selectedLines.filter((l) => l.name.trim().length >= 2).length === 0) &&
                 'opacity-60',
             )}
           >
@@ -494,7 +709,9 @@ export function SupplierImport({
               <ActivityIndicator color={colors.accentForeground} />
             ) : (
               <Text className="text-base font-extrabold text-accent-foreground">
-                Stoğa ve cariye kaydet · {formatCurrency(totalPurchase)}
+                {undecidedLines.length > 0
+                  ? `Önce ${undecidedLines.length} satırı eşleştirin`
+                  : `Stoğa ve cariye kaydet · ${formatCurrency(totalPurchase)}`}
               </Text>
             )}
           </Pressable>
@@ -504,6 +721,18 @@ export function SupplierImport({
           </Pressable>
         </KeyboardAwareScrollView>
       )}
+
+      {matchSheetLine?.match ? (
+        <StockMatchSheet
+          visible
+          onClose={() => setMatchSheetId(null)}
+          lineName={matchSheetLine.name}
+          match={matchSheetLine.match}
+          mode="import"
+          onDecide={(d) => decideLine(matchSheetLine.id, d)}
+          onManufacturerCodeChange={(c) => setManufacturerCode(matchSheetLine.id, c)}
+        />
+      ) : null}
     </View>
   )
 }

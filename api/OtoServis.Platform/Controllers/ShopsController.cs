@@ -192,6 +192,28 @@ public class ShopsController(PlatformDataService data) : Controller
         return RedirectToAction(nameof(Details), new { id });
     }
 
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> UpdateUser(Guid id, EditUserForm form)
+    {
+        if (!ModelState.IsValid)
+        {
+            TempData["Error"] = "Kullanıcı düzenleme formu eksik veya hatalı.";
+            return RedirectToAction(nameof(Details), new { id });
+        }
+
+        try
+        {
+            await data.UpdateUserAsync(id, form);
+            TempData["Flash"] = "Kullanıcı güncellendi.";
+        }
+        catch (Exception ex)
+        {
+            TempData["Error"] = ex.Message;
+        }
+        return RedirectToAction(nameof(Details), new { id });
+    }
+
     private async Task<ShopDetailViewModel?> BuildDetailsAsync(Guid id)
     {
         var shop = await data.GetShopAsync(id);

@@ -5,7 +5,7 @@
 <html lang="tr">
 <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>@ViewData["Title"] - MobilServisiniz Platform</title>
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="~/css/admin.css" asp-append-version="true" />
@@ -14,6 +14,7 @@
 <div class="admin-shell">
     @if (User.Identity?.IsAuthenticated == true)
     {
+        <div class="admin-backdrop" id="adminBackdrop"></div>
         <aside class="admin-sidebar">
             <div class="brand">Platform Yönetim</div>
             <div class="shop-name">Tüm servisler</div>
@@ -30,9 +31,12 @@
         @if (User.Identity?.IsAuthenticated == true)
         {
             <header class="admin-topbar">
-                <div class="fw-bold text-secondary">@ViewData["Title"]</div>
+                <div class="d-flex align-items-center gap-2 min-w-0">
+                    <button type="button" class="admin-menu-btn" id="adminMenuBtn" aria-label="Menü">&#9776;</button>
+                    <div class="fw-bold text-secondary admin-topbar-title">@ViewData["Title"]</div>
+                </div>
                 <div class="d-flex align-items-center gap-3">
-                    <span class="text-muted small">@User.Identity?.Name</span>
+                    <span class="text-muted small d-none d-md-inline">@User.Identity?.Name</span>
                     <form asp-controller="Account" asp-action="Logout" method="post" class="m-0">
                         @Html.AntiForgeryToken()
                         <button type="submit" class="btn btn-sm btn-outline-secondary">Çıkış</button>
@@ -48,6 +52,19 @@
 </div>
 <script src="~/lib/jquery/dist/jquery.min.js"></script>
 <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+(function () {
+    var btn = document.getElementById("adminMenuBtn");
+    var bd = document.getElementById("adminBackdrop");
+    if (!btn) return;
+    function toggle(open) { document.body.classList.toggle("nav-open", open); }
+    btn.addEventListener("click", function () { toggle(!document.body.classList.contains("nav-open")); });
+    if (bd) bd.addEventListener("click", function () { toggle(false); });
+    document.querySelectorAll(".admin-nav a").forEach(function (a) {
+        a.addEventListener("click", function () { toggle(false); });
+    });
+})();
+</script>
 @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

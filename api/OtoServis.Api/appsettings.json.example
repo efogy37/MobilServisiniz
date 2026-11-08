@@ -28,9 +28,7 @@
     }
   },
   "Storage": {
-    "UploadsPath": "C:\\OtoServis\\api\\wwwroot\\uploads",
-    "Wwwroot": "C:\\OtoServis\\api\\wwwroot",
-    "Root": "C:\\OtoServis"
+    "Root": "C:\\inetpub\\wwwroot\\mobilservisiniz"
   },
   "AllowedHosts": "*"
 }

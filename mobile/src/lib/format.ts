@@ -87,3 +87,19 @@ export function formatDateTime(iso: string): string {
   if (!time) return date
   return `${date} ${time}`
 }
+
+/** Aynı araç için tekrarlayan servis kaydı etiketi; ilk gelişte boş. */
+export function formatVisitLabel(visitNumber?: number | null): string {
+  const n = visitNumber != null ? Number(visitNumber) : 0
+  if (!Number.isFinite(n) || n < 2) return ''
+  return `${Math.trunc(n)}. kez`
+}
+
+/** Örn: "Bugün", "1 gündür bekliyor", "12 gündür bekliyor" */
+export function formatDaysWaiting(days?: number | null): string {
+  const n = days != null ? Math.trunc(Number(days)) : NaN
+  if (!Number.isFinite(n) || n < 0) return ''
+  if (n === 0) return 'Bugün'
+  if (n === 1) return '1 gündür bekliyor'
+  return `${n} gündür bekliyor`
+}

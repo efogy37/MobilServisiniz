@@ -233,8 +233,18 @@ public class AdminDataService(DbFactory db, TenantContext tenant)
         var sql = @"SELECT wo.id AS Id, wo.order_no AS OrderNo, wo.status AS Status,
                            v.plate AS Plate, c.full_name AS CustomerName,
                            t.grand_total AS GrandTotal, t.paid_total AS PaidTotal,
-                           wo.opened_at AS OpenedAt
+                           wo.opened_at AS OpenedAt,
+                           vn.VisitNumber AS VisitNumber
                     FROM dbo.work_orders wo
+                    INNER JOIN (
+                        SELECT id,
+                               CAST(ROW_NUMBER() OVER (
+                                   PARTITION BY vehicle_id
+                                   ORDER BY opened_at ASC, order_no ASC
+                               ) AS int) AS VisitNumber
+                        FROM dbo.work_orders
+                        WHERE shop_id = @ShopId
+                    ) vn ON vn.id = wo.id
                     INNER JOIN dbo.vehicles v ON v.id = wo.vehicle_id
                     INNER JOIN dbo.customers c ON c.id = wo.customer_id
                     LEFT JOIN dbo.vw_WorkOrderTotals t ON t.id = wo.id

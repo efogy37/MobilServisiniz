@@ -19,7 +19,7 @@ import {
 } from 'lucide-react-native'
 import { STATUS_LABELS as JOB_STATUS_LABELS, type JobStatus, type Vehicle } from '@/lib/types'
 import { VehicleCard, cardShadow } from '@/components/vehicle-card'
-import { formatDate, formatCurrency } from '@/lib/format'
+import { formatDate, formatCurrency, formatDaysWaiting } from '@/lib/format'
 import { colors } from '@/lib/theme'
 import { TextField } from '@/components/form-field'
 import { AppSheet, SheetCancelButton } from '@/components/app-modal'
@@ -392,16 +392,25 @@ function PendingPaymentsSheet({
         <Text className="py-4 text-sm text-muted-foreground">Bekleyen ödeme bulunmuyor.</Text>
       ) : (
         <View className="gap-2">
-          {items.map((item) => (
+          {items.map((item) => {
+            const waitingLabel = formatDaysWaiting(item.daysWaiting)
+            return (
             <Pressable
               key={item.workOrderId}
               onPress={() => onOpenItem(item)}
               className="rounded-2xl border border-border bg-secondary/50 px-4 py-3 active:opacity-90"
             >
               <View className="flex-row items-center justify-between gap-2">
-                <Text className="font-mono text-sm font-extrabold text-foreground">
-                  {item.plate}
-                </Text>
+                <View className="flex-row items-center gap-2">
+                  <Text className="font-mono text-sm font-extrabold text-foreground">
+                    {item.plate}
+                  </Text>
+                  {item.visitNumber != null && item.visitNumber > 1 ? (
+                    <Text className="text-[11px] font-bold text-muted-foreground">
+                      {item.visitNumber}. kez
+                    </Text>
+                  ) : null}
+                </View>
                 <Text className="text-sm font-extrabold text-accent">
                   {formatCurrency(item.remaining)}
                 </Text>
@@ -410,11 +419,16 @@ function PendingPaymentsSheet({
                 {item.customerName} · {JOB_STATUS_LABELS[item.status]}
               </Text>
               <Text className="mt-0.5 text-[11px] text-muted-foreground">
+                {item.pendingSince ? formatDate(item.pendingSince) : '—'}
+                {waitingLabel ? ` · ${waitingLabel}` : ''}
+              </Text>
+              <Text className="mt-0.5 text-[11px] text-muted-foreground">
                 Toplam {formatCurrency(item.grandTotal)} · Ödenen{' '}
                 {formatCurrency(item.paidTotal)}
               </Text>
             </Pressable>
-          ))}
+            )
+          })}
         </View>
       )}
       <SheetCancelButton onPress={onClose} />

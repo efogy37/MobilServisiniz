@@ -1,6 +1,8 @@
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.Data.SqlClient;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using OtoServis.Api.Services;
@@ -42,6 +44,14 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     });
 builder.Services.AddAuthorization();
 
+builder.Services.Configure<Microsoft.AspNetCore.Http.Features.FormOptions>(opt =>
+{
+    opt.MultipartBodyLengthLimit = 30_000_000;
+});
+builder.WebHost.ConfigureKestrel(opt =>
+{
+    opt.Limits.MaxRequestBodySize = 30_000_000;
+});
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(c =>
@@ -71,7 +81,7 @@ builder.Services.AddCors(opt =>
 var storage = builder.Configuration.GetSection(StorageOptions.SectionName).Get<StorageOptions>()
     ?? new StorageOptions();
 var contentRoot = builder.Environment.ContentRootPath;
-if (!string.IsNullOrWhiteSpace(storage.Wwwroot) || !string.IsNullOrWhiteSpace(storage.Root))
+if (!string.IsNullOrWhiteSpace(storage.Root))
     builder.WebHost.UseWebRoot(storage.ResolveWwwroot(contentRoot));
 
 var app = builder.Build();
@@ -90,6 +100,27 @@ var forwardedHeadersOptions = new ForwardedHeadersOptions
 forwardedHeadersOptions.KnownNetworks.Clear();
 forwardedHeadersOptions.KnownProxies.Clear();
 app.UseForwardedHeaders(forwardedHeadersOptions);
+
+app.UseExceptionHandler(err =>
+{
+    err.UseCors();
+    err.Run(async ctx =>
+    {
+        var ex = ctx.Features.Get<IExceptionHandlerFeature>()?.Error;
+        ctx.Response.ContentType = "application/json";
+        if (ex is SqlException sql && sql.Number is 2601 or 2627)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status409Conflict;
+            await ctx.Response.WriteAsJsonAsync(new
+            {
+                error = "Bu ürün kodu zaten stokta var. Aynı kodla ikinci ürün eklenemez; kodu değiştirin veya boş bırakın.",
+            });
+            return;
+        }
+        ctx.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        await ctx.Response.WriteAsJsonAsync(new { error = "Sunucu hatası. Tekrar deneyin." });
+    });
+});
 
 app.UseSwagger();
 app.UseSwaggerUI();

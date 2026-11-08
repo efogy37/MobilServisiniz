@@ -184,3 +184,179 @@ body {
         background: #fff !important;
     }
 }
+
+/* ---- Mobil / responsive ---- */
+.admin-menu-btn,
+.admin-backdrop { display: none; }
+
+.min-w-0 { min-width: 0; }
+
+.admin-topbar-title {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+@media (max-width: 991.98px) {
+    .admin-shell { display: block; }
+
+    .admin-sidebar {
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 270px;
+        max-width: 85vw;
+        z-index: 1050;
+        transform: translateX(-100%);
+        transition: transform .2s ease;
+        overflow-y: auto;
+    }
+
+    body.nav-open .admin-sidebar { transform: translateX(0); }
+
+    .admin-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,.45);
+        z-index: 1040;
+    }
+
+    body.nav-open .admin-backdrop { display: block; }
+    body.nav-open { overflow: hidden; }
+
+    .admin-menu-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 42px;
+        height: 42px;
+        flex-shrink: 0;
+        border: 1px solid #d5dbe8;
+        background: #fff;
+        border-radius: 10px;
+        font-size: 1.3rem;
+        line-height: 1;
+        color: var(--os-primary);
+    }
+
+    .admin-topbar {
+        position: sticky;
+        top: 0;
+        z-index: 1030;
+        padding: .6rem 1rem;
+    }
+
+    .admin-nav a { padding: .95rem 1.5rem; }
+}
+
+.create-shop-card { max-width: 640px; }
+
+@media (max-width: 767.98px) {
+    .admin-content { padding: 1rem .75rem; }
+
+    .create-shop-card { max-width: none; }
+
+    /* iOS yakınlaştırmayı önlemek ve dokunma alanını büyütmek için */
+    .form-control,
+    .form-select,
+    .form-control-sm,
+    .form-select-sm {
+        font-size: 16px !important;
+        min-height: 48px;
+        padding: .65rem .85rem;
+    }
+
+    .form-label,
+    .form-label.small {
+        font-size: .9rem;
+        font-weight: 600;
+        margin-bottom: .35rem;
+    }
+
+    .btn { min-height: 44px; }
+    .btn-sm { padding: .55rem .9rem; font-size: .95rem; min-height: 44px; }
+    .btn-mobile-block { width: 100%; display: block; }
+
+    .login-card { margin: 1rem; padding: 1.5rem; }
+
+    /* Lisans hızlı uzatma butonları */
+    .card-body .d-flex.flex-wrap.gap-2 > form { flex: 1 1 calc(50% - .5rem); }
+    .card-body .d-flex.flex-wrap.gap-2 > form .btn { width: 100%; }
+
+    .stat-card .value,
+    .stat-card .fs-4 { font-size: 1.45rem; }
+
+    /* Tabloları kart görünümüne çevir */
+    .table.table-stack thead { display: none; }
+
+    .table.table-stack,
+    .table.table-stack > tbody,
+    .table.table-stack > tbody > tr,
+    .table.table-stack > tbody > tr > td {
+        display: block;
+        width: 100%;
+    }
+
+    .table.table-stack > tbody > tr {
+        border: 1px solid #e8edf5;
+        border-radius: 12px;
+        margin-bottom: .75rem;
+        padding: .55rem .85rem;
+        background: #fff;
+    }
+
+    .table.table-stack > tbody > tr > td {
+        border: 0;
+        padding: .4rem 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
+        text-align: right;
+        box-shadow: none;
+        background: transparent;
+    }
+
+    .table.table-stack > tbody > tr > td[data-label]::before {
+        content: attr(data-label);
+        font-weight: 600;
+        color: #6b7a90;
+        text-align: left;
+        flex-shrink: 0;
+        max-width: 40%;
+    }
+
+    .table.table-stack > tbody > tr > td.cell-main {
+        display: block;
+        text-align: left;
+        font-size: 1.05rem;
+        border-bottom: 1px solid #eef1f6;
+        padding-bottom: .55rem;
+        margin-bottom: .25rem;
+    }
+    .table.table-stack > tbody > tr > td.cell-main[data-label]::before { display: none; }
+
+    .table.table-stack > tbody > tr > td.cell-actions {
+        flex-direction: column;
+        align-items: stretch;
+        text-align: left;
+        gap: .5rem;
+        border-top: 1px solid #eef1f6;
+        padding-top: .55rem;
+        margin-top: .25rem;
+    }
+    .table.table-stack > tbody > tr > td.cell-actions .d-inline-flex {
+        flex-wrap: wrap;
+        width: 100%;
+        gap: .4rem !important;
+    }
+    .table.table-stack > tbody > tr > td.cell-actions .btn { flex: 1 1 auto; }
+    .table.table-stack .collapse form,
+    .table.table-stack .collapse.show form {
+        width: 100%;
+        flex-direction: column !important;
+        align-items: stretch !important;
+    }
+    .table.table-stack .collapse input { max-width: none !important; width: 100%; flex: 1; }
+}

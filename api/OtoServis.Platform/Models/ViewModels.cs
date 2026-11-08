@@ -137,6 +137,10 @@ public class AddUserForm
     [Required, Display(Name = "Ad soyad")]
     public string FullName { get; set; } = "";
 
+    [Display(Name = "Kullanıcı adı")]
+    [StringLength(50, MinimumLength = 3)]
+    public string? Username { get; set; }
+
     [Required, Display(Name = "Telefon")]
     public string Phone { get; set; } = "";
 
@@ -144,6 +148,27 @@ public class AddUserForm
     [MinLength(4)]
     [DataType(DataType.Password)]
     public string Password { get; set; } = "";
+
+    [Required, Display(Name = "Rol")]
+    public string Role { get; set; } = "personel";
+
+    [Display(Name = "Ünvan")]
+    public string? Title { get; set; }
+}
+
+public class EditUserForm
+{
+    public Guid UserId { get; set; }
+
+    [Required, Display(Name = "Ad soyad")]
+    public string FullName { get; set; } = "";
+
+    [Required, Display(Name = "Kullanıcı adı")]
+    [StringLength(50, MinimumLength = 3)]
+    public string Username { get; set; } = "";
+
+    [Required, Display(Name = "Telefon")]
+    public string Phone { get; set; } = "";
 
     [Required, Display(Name = "Rol")]
     public string Role { get; set; } = "personel";
@@ -166,6 +191,7 @@ public class ShopUserRow
     public Guid UserId { get; set; }
     public Guid MembershipId { get; set; }
     public string FullName { get; set; } = "";
+    public string? Username { get; set; }
     public string Phone { get; set; } = "";
     public string Role { get; set; } = "";
     public string? Title { get; set; }

@@ -1,11 +1,17 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Platform, Pressable, ScrollView, Text, View } from 'react-native'
+import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, Text, View } from 'react-native'
 import DateTimePicker from '@react-native-community/datetimepicker'
+import * as Print from 'expo-print'
+import * as Sharing from 'expo-sharing'
+import { cacheDirectory, EncodingType, writeAsStringAsync } from 'expo-file-system/legacy'
+import { openWebPrintPreview } from '@/lib/web-print-share'
 import {
   ArrowLeft,
   BarChart3,
   Calendar,
   ChevronRight,
+  FileSpreadsheet,
+  FileText,
   LineChart,
   Package,
   ShoppingCart,
@@ -24,12 +30,16 @@ import {
   getStockMovementDetail,
   getStockPurchaseSaleReport,
   getStockUsageReport,
+  getStoredShopName,
   getSupplierLedger,
   type AccountLedgerRow,
   type CustomerLedgerEntry,
   type SalesReport,
   type StockMovementDetail,
+  type StockPurchaseSaleGroupBy,
   type StockPurchaseSaleRow,
+  type StockPurchaseSaleSupplierRow,
+  type StockPurchaseSaleVehicleRow,
   type StockUsageRow,
   type SupplierTransaction,
 } from '@/lib/api'
@@ -151,30 +161,83 @@ function PeriodBar(props: ReturnType<typeof usePeriodRange>) {
 
       {period === 'custom' ? (
         <View className="mt-3 flex-row gap-2">
-          <DateField label="Başlangıç" value={fromIso} onPress={() => setPicker('from')} />
-          <DateField label="Bitiş" value={toIsoDate} onPress={() => setPicker('to')} />
+          <DateField
+            label="Başlangıç"
+            value={fromIso}
+            onPress={() => setPicker('from')}
+            onChangeIso={setFromIso}
+          />
+          <DateField
+            label="Bitiş"
+            value={toIsoDate}
+            onPress={() => setPicker('to')}
+            onChangeIso={setToIsoDate}
+          />
         </View>
       ) : null}
 
-      {picker && (
+      {/* Web'de DateTimePicker çalışmıyor — DateField native input kullanır */}
+      {picker && Platform.OS !== 'web' ? (
         <DateTimePicker
           value={parseIso(picker === 'from' ? fromIso : toIsoDate)}
           mode="date"
           display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-          onChange={(_, date) => {
+          onChange={(event, date) => {
             if (Platform.OS === 'android') setPicker(null)
-            if (!date) return
+            if (event.type === 'dismissed' || !date) return
             const iso = toIso(date)
             if (picker === 'from') setFromIso(iso)
             else setToIsoDate(iso)
+            if (Platform.OS === 'ios') setPicker(null)
           }}
         />
-      )}
+      ) : null}
     </View>
   )
 }
 
-function DateField({ label, value, onPress }: { label: string; value: string; onPress: () => void }) {
+function DateField({
+  label,
+  value,
+  onPress,
+  onChangeIso,
+}: {
+  label: string
+  value: string
+  onPress: () => void
+  onChangeIso?: (iso: string) => void
+}) {
+  if (Platform.OS === 'web' && onChangeIso) {
+    return (
+      <View className="flex-1 rounded-xl border border-border bg-card px-3 py-2.5">
+        <Text className="text-[11px] font-semibold text-muted-foreground">{label}</Text>
+        <View className="mt-1 flex-row items-center gap-1.5">
+          <Calendar size={14} color={colors.mutedForeground} />
+          {/* RN Web: tarayıcı tarih seçici */}
+          <input
+            type="date"
+            value={value}
+            onChange={(e) => {
+              const next = e.target.value
+              if (next) onChangeIso(next)
+            }}
+            style={{
+              border: 'none',
+              background: 'transparent',
+              fontWeight: 700,
+              fontSize: 14,
+              color: colors.foreground,
+              outline: 'none',
+              width: '100%',
+              fontFamily: 'inherit',
+              minHeight: 22,
+            }}
+          />
+        </View>
+      </View>
+    )
+  }
+
   return (
     <Pressable onPress={onPress} className="flex-1 rounded-xl border border-border bg-card px-3 py-2.5">
       <Text className="text-[11px] font-semibold text-muted-foreground">{label}</Text>
@@ -240,8 +303,8 @@ export function StockReports({ onBack }: { onBack: () => void }) {
     },
     {
       key: 'purchaseSale',
-      title: 'Stok Alış–Satış Raporu',
-      subtitle: 'Parça maliyeti, satış tutarı ve kâr (işçilik hariç)',
+      title: 'Parça Kâr Raporu',
+      subtitle: 'Ürün, araç veya tedarikçi bazlı alış–satış ve kâr',
       icon: ShoppingCart,
       color: '#e07d33',
     },
@@ -443,36 +506,304 @@ function StockUsageScreen({ onBack }: { onBack: () => void }) {
    2) Stok Alış–Satış Raporu
    ------------------------------------------------------------------- */
 
+function ProfitAmounts({
+  purchase,
+  sale,
+  profit,
+}: {
+  purchase: number
+  sale: number
+  profit: number
+}) {
+  return (
+    <View className="mt-2 flex-row flex-wrap items-center gap-x-4 gap-y-1">
+      <Text className="text-xs font-semibold text-muted-foreground">
+        Alış: <Text className="text-foreground">{formatCurrency(purchase)}</Text>
+      </Text>
+      <Text className="text-xs font-semibold text-muted-foreground">
+        Satış: <Text className="text-foreground">{formatCurrency(sale)}</Text>
+      </Text>
+      <Text className={cn('text-xs font-bold', profit >= 0 ? 'text-chart-2' : 'text-destructive')}>
+        Kâr: {formatCurrency(profit)}
+      </Text>
+    </View>
+  )
+}
+
+type ProfitExportRow = {
+  col1: string
+  col2: string
+  quantity: number
+  purchase: number
+  sale: number
+  profit: number
+}
+
+function groupByLabel(groupBy: StockPurchaseSaleGroupBy) {
+  if (groupBy === 'vehicle') return 'Araç'
+  if (groupBy === 'supplier') return 'Tedarikçi'
+  return 'Ürün'
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function csvCell(value: string | number) {
+  const s = String(value ?? '')
+  if (/[;"\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`
+  return s
+}
+
+function numTr(n: number) {
+  return (Math.round(n * 100) / 100).toFixed(2).replace('.', ',')
+}
+
+function buildProfitExportRows(
+  groupBy: StockPurchaseSaleGroupBy,
+  productRows: StockPurchaseSaleRow[],
+  vehicleRows: StockPurchaseSaleVehicleRow[],
+  supplierRows: StockPurchaseSaleSupplierRow[],
+): ProfitExportRow[] {
+  if (groupBy === 'vehicle') {
+    return vehicleRows.map((r) => ({
+      col1: r.plate,
+      col2: [r.brand, r.model, r.customerName].filter(Boolean).join(' · '),
+      quantity: r.totalQuantity,
+      purchase: r.totalPurchaseAmount,
+      sale: r.totalSaleAmount,
+      profit: r.profit,
+    }))
+  }
+  if (groupBy === 'supplier') {
+    return supplierRows.map((r) => ({
+      col1: r.supplierName,
+      col2: r.source === 'disaridan' ? 'Dışarıdan' : 'Stok',
+      quantity: r.totalQuantity,
+      purchase: r.totalPurchaseAmount,
+      sale: r.totalSaleAmount,
+      profit: r.profit,
+    }))
+  }
+  return productRows.map((r) => ({
+    col1: r.name,
+    col2: r.category?.trim() || '—',
+    quantity: r.totalQuantity,
+    purchase: r.totalPurchaseAmount,
+    sale: r.totalSaleAmount,
+    profit: r.profit,
+  }))
+}
+
+function buildProfitCsv(
+  groupBy: StockPurchaseSaleGroupBy,
+  rangeLabel: string,
+  shopName: string | null | undefined,
+  rows: ProfitExportRow[],
+) {
+  const header1 =
+    groupBy === 'vehicle' ? 'Plaka' : groupBy === 'supplier' ? 'Tedarikçi / Kaynak' : 'Ürün'
+  const header2 =
+    groupBy === 'vehicle' ? 'Araç / Müşteri' : groupBy === 'supplier' ? 'Kaynak tipi' : 'Kategori'
+  const lines = [
+    csvCell('Parça Kâr Raporu'),
+    csvCell(shopName?.trim() || ''),
+    csvCell(`Dönem: ${rangeLabel}`),
+    csvCell(`Görünüm: ${groupByLabel(groupBy)}`),
+    '',
+    [header1, header2, 'Adet', 'Alış', 'Satış', 'Kâr'].map(csvCell).join(';'),
+    ...rows.map((r) =>
+      [r.col1, r.col2, r.quantity, numTr(r.purchase), numTr(r.sale), numTr(r.profit)]
+        .map(csvCell)
+        .join(';'),
+    ),
+    '',
+    [
+      'TOPLAM',
+      '',
+      rows.reduce((s, r) => s + r.quantity, 0),
+      numTr(rows.reduce((s, r) => s + r.purchase, 0)),
+      numTr(rows.reduce((s, r) => s + r.sale, 0)),
+      numTr(rows.reduce((s, r) => s + r.profit, 0)),
+    ]
+      .map(csvCell)
+      .join(';'),
+  ]
+  return `\uFEFF${lines.join('\r\n')}`
+}
+
+function buildProfitPdfHtml(
+  groupBy: StockPurchaseSaleGroupBy,
+  rangeLabel: string,
+  shopName: string | null | undefined,
+  rows: ProfitExportRow[],
+) {
+  const header1 =
+    groupBy === 'vehicle' ? 'Plaka' : groupBy === 'supplier' ? 'Tedarikçi' : 'Ürün'
+  const header2 =
+    groupBy === 'vehicle' ? 'Detay' : groupBy === 'supplier' ? 'Kaynak' : 'Kategori'
+  const shop = shopName?.trim()
+  const totalPurchase = rows.reduce((s, r) => s + r.purchase, 0)
+  const totalSale = rows.reduce((s, r) => s + r.sale, 0)
+  const totalProfit = rows.reduce((s, r) => s + r.profit, 0)
+  const body = rows
+    .map(
+      (r) => `<tr>
+      <td>${escapeHtml(r.col1)}</td>
+      <td>${escapeHtml(r.col2)}</td>
+      <td class="num">${r.quantity}</td>
+      <td class="num">${escapeHtml(formatCurrency(r.purchase))}</td>
+      <td class="num">${escapeHtml(formatCurrency(r.sale))}</td>
+      <td class="num ${r.profit >= 0 ? 'pos' : 'neg'}">${escapeHtml(formatCurrency(r.profit))}</td>
+    </tr>`,
+    )
+    .join('')
+
+  return `<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; color: #1a1a1a; padding: 24px; }
+  .shop { font-size: 22px; font-weight: 800; text-align: center; letter-spacing: .03em; margin: 0 0 8px; text-transform: uppercase; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .meta { font-size: 12px; color: #555; margin-bottom: 16px; }
+  .cards { display: flex; gap: 8px; margin-bottom: 16px; }
+  .card { flex: 1; border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px; }
+  .card .l { font-size: 11px; color: #6b7280; }
+  .card .v { font-size: 15px; font-weight: 800; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { border-bottom: 1px solid #eee; padding: 8px 6px; font-size: 12px; text-align: left; vertical-align: top; }
+  th { color: #6b7280; font-size: 11px; }
+  .num { text-align: right; white-space: nowrap; }
+  .pos { color: #15803d; font-weight: 700; }
+  .neg { color: #b91c1c; font-weight: 700; }
+  tfoot td { font-weight: 800; border-top: 2px solid #1a1a1a; padding-top: 10px; }
+</style>
+</head>
+<body>
+  ${shop ? `<div class="shop">${escapeHtml(shop.toLocaleUpperCase('tr-TR'))}</div>` : ''}
+  <h1>Parça Kâr Raporu</h1>
+  <div class="meta">${escapeHtml(rangeLabel)} · ${escapeHtml(groupByLabel(groupBy))} görünümü · işçilik hariç</div>
+  <div class="cards">
+    <div class="card"><div class="l">Alış</div><div class="v">${escapeHtml(formatCurrency(totalPurchase))}</div></div>
+    <div class="card"><div class="l">Parça Satışı</div><div class="v">${escapeHtml(formatCurrency(totalSale))}</div></div>
+    <div class="card"><div class="l">Kâr</div><div class="v ${totalProfit >= 0 ? 'pos' : 'neg'}">${escapeHtml(formatCurrency(totalProfit))}</div></div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>${escapeHtml(header1)}</th>
+        <th>${escapeHtml(header2)}</th>
+        <th class="num">Adet</th>
+        <th class="num">Alış</th>
+        <th class="num">Satış</th>
+        <th class="num">Kâr</th>
+      </tr>
+    </thead>
+    <tbody>${body}</tbody>
+    <tfoot>
+      <tr>
+        <td>Toplam</td>
+        <td></td>
+        <td class="num">${rows.reduce((s, r) => s + r.quantity, 0)}</td>
+        <td class="num">${escapeHtml(formatCurrency(totalPurchase))}</td>
+        <td class="num">${escapeHtml(formatCurrency(totalSale))}</td>
+        <td class="num ${totalProfit >= 0 ? 'pos' : 'neg'}">${escapeHtml(formatCurrency(totalProfit))}</td>
+      </tr>
+    </tfoot>
+  </table>
+</body>
+</html>`
+}
+
+function openHtmlPrintPreview(html: string) {
+  openWebPrintPreview(html, {
+    title: 'Parça kâr raporu',
+    filename: 'parca-kar-raporu.html',
+  })
+}
+
+function downloadWebFile(filename: string, content: string, mime: string) {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+async function shareNativeFile(uri: string, mimeType: string, uti?: string) {
+  const canShare = await Sharing.isAvailableAsync()
+  if (!canShare) {
+    Alert.alert('Paylaşım', 'Bu cihazda paylaşım kullanılamıyor.')
+    return
+  }
+  await Sharing.shareAsync(uri, { mimeType, UTI: uti, dialogTitle: 'Raporu paylaş' })
+}
+
 function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
   const range = usePeriodRange()
-  const [rows, setRows] = useState<StockPurchaseSaleRow[]>([])
+  const [groupBy, setGroupBy] = useState<StockPurchaseSaleGroupBy>('product')
+  const [productRows, setProductRows] = useState<StockPurchaseSaleRow[]>([])
+  const [vehicleRows, setVehicleRows] = useState<StockPurchaseSaleVehicleRow[]>([])
+  const [supplierRows, setSupplierRows] = useState<StockPurchaseSaleSupplierRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [detailRow, setDetailRow] = useState<StockPurchaseSaleRow | null>(null)
+  const [detailTitle, setDetailTitle] = useState<string | null>(null)
   const [detail, setDetail] = useState<StockMovementDetail[]>([])
   const [detailLoading, setDetailLoading] = useState(false)
+  const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null)
 
   useEffect(() => {
     let active = true
     setLoading(true)
-    getStockPurchaseSaleReport(range.from, range.to)
+    getStockPurchaseSaleReport(range.from, range.to, groupBy)
       .then((r) => {
-        if (active) setRows(r)
+        if (!active) return
+        if (groupBy === 'vehicle') {
+          setVehicleRows(r as StockPurchaseSaleVehicleRow[])
+          setProductRows([])
+          setSupplierRows([])
+        } else if (groupBy === 'supplier') {
+          setSupplierRows(r as StockPurchaseSaleSupplierRow[])
+          setProductRows([])
+          setVehicleRows([])
+        } else {
+          setProductRows(r as StockPurchaseSaleRow[])
+          setVehicleRows([])
+          setSupplierRows([])
+        }
       })
-      .catch(() => active && setRows([]))
+      .catch(() => {
+        if (!active) return
+        setProductRows([])
+        setVehicleRows([])
+        setSupplierRows([])
+      })
       .finally(() => active && setLoading(false))
     return () => {
       active = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.from, range.to])
+  }, [range.from, range.to, groupBy])
 
-  async function openDetail(row: StockPurchaseSaleRow) {
-    setDetailRow(row)
+  const activeRows =
+    groupBy === 'vehicle' ? vehicleRows : groupBy === 'supplier' ? supplierRows : productRows
+  const totalPurchase = activeRows.reduce((s, r) => s + r.totalPurchaseAmount, 0)
+  const totalSale = activeRows.reduce((s, r) => s + r.totalSaleAmount, 0)
+  const totalProfit = totalSale - totalPurchase
+
+  async function openProductDetail(row: StockPurchaseSaleRow) {
+    setDetailTitle(row.name)
     setDetail([])
     setDetailLoading(true)
     try {
-      const rows2 = await getStockMovementDetail(row.stockProductId, row.name, range.from, range.to)
-      setDetail(rows2)
+      setDetail(await getStockMovementDetail(row.stockProductId, row.name, range.from, range.to))
     } catch {
       setDetail([])
     } finally {
@@ -480,14 +811,123 @@ function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
     }
   }
 
-  const totalPurchase = rows.reduce((s, r) => s + r.totalPurchaseAmount, 0)
-  const totalSale = rows.reduce((s, r) => s + r.totalSaleAmount, 0)
-  const totalProfit = totalSale - totalPurchase
+  async function openVehicleDetail(row: StockPurchaseSaleVehicleRow) {
+    const label = [row.plate, row.brand, row.model].filter(Boolean).join(' · ')
+    setDetailTitle(label)
+    setDetail([])
+    setDetailLoading(true)
+    try {
+      setDetail(
+        await getStockMovementDetail(null, null, range.from, range.to, {
+          vehicleId: row.vehicleId,
+        }),
+      )
+    } catch {
+      setDetail([])
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  async function openSupplierDetail(row: StockPurchaseSaleSupplierRow) {
+    setDetailTitle(row.supplierName)
+    setDetail([])
+    setDetailLoading(true)
+    try {
+      setDetail(
+        await getStockMovementDetail(null, null, range.from, range.to, {
+          supplierId: row.supplierId,
+          source: row.source,
+        }),
+      )
+    } catch {
+      setDetail([])
+    } finally {
+      setDetailLoading(false)
+    }
+  }
+
+  const groupTabs: { key: StockPurchaseSaleGroupBy; label: string }[] = [
+    { key: 'product', label: 'Ürün' },
+    { key: 'vehicle', label: 'Araç' },
+    { key: 'supplier', label: 'Tedarikçi' },
+  ]
+
+  const listHint =
+    groupBy === 'vehicle'
+      ? 'Araç bazlı özet · detay için dokun'
+      : groupBy === 'supplier'
+        ? 'Tedarikçi / stok özeti · Samet Oto gibi dışarıdan temin dahil'
+        : 'Ürün bazlı özet · detay için dokun'
+
+  const exportRows = buildProfitExportRows(groupBy, productRows, vehicleRows, supplierRows)
+  const fileStamp = `${range.from}_${range.to}_${groupBy}`
+
+  async function exportPdf() {
+    if (exportRows.length === 0 || exporting) return
+    setExporting('pdf')
+    try {
+      const shopName = await getStoredShopName()
+      const html = buildProfitPdfHtml(groupBy, range.rangeLabel, shopName, exportRows)
+      if (Platform.OS === 'web') {
+        openHtmlPrintPreview(html)
+        return
+      }
+      const { uri } = await Print.printToFileAsync({ html })
+      await shareNativeFile(uri, 'application/pdf', 'com.adobe.pdf')
+    } catch (e) {
+      Alert.alert('PDF', e instanceof Error ? e.message : 'PDF oluşturulamadı.')
+    } finally {
+      setExporting(null)
+    }
+  }
+
+  async function exportExcel() {
+    if (exportRows.length === 0 || exporting) return
+    setExporting('excel')
+    try {
+      const shopName = await getStoredShopName()
+      const csv = buildProfitCsv(groupBy, range.rangeLabel, shopName, exportRows)
+      const filename = `parca-kar-raporu_${fileStamp}.csv`
+      if (Platform.OS === 'web') {
+        downloadWebFile(filename, csv, 'text/csv;charset=utf-8;')
+        return
+      }
+      if (!cacheDirectory) throw new Error('Dosya klasörü bulunamadı.')
+      const uri = `${cacheDirectory}${filename}`
+      await writeAsStringAsync(uri, csv, { encoding: EncodingType.UTF8 })
+      await shareNativeFile(uri, 'text/csv', 'public.comma-separated-values-text')
+    } catch (e) {
+      Alert.alert('Excel', e instanceof Error ? e.message : 'Excel dosyası oluşturulamadı.')
+    } finally {
+      setExporting(null)
+    }
+  }
 
   return (
     <View className="flex-1">
-      <ReportHeader title="Stok Alış–Satış Raporu" subtitle={range.rangeLabel} onBack={onBack} />
+      <ReportHeader title="Parça Kâr Raporu" subtitle={range.rangeLabel} onBack={onBack} />
       <PeriodBar {...range} />
+
+      <View className="px-5 pb-2">
+        <View className="flex-row gap-1 rounded-2xl bg-secondary p-1">
+          {groupTabs.map((tab) => {
+            const active = groupBy === tab.key
+            return (
+              <Pressable
+                key={tab.key}
+                onPress={() => setGroupBy(tab.key)}
+                className={cn('h-10 flex-1 items-center justify-center rounded-xl', active ? 'bg-card' : '')}
+                style={active ? cardShadow : undefined}
+              >
+                <Text className={cn('text-xs font-bold', active ? 'text-foreground' : 'text-muted-foreground')}>
+                  {tab.label}
+                </Text>
+              </Pressable>
+            )
+          })}
+        </View>
+      </View>
 
       {loading ? (
         <View className="flex-1 items-center justify-center">
@@ -498,11 +938,15 @@ function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
           <View className="flex-row gap-2">
             <View className="flex-1 rounded-2xl border border-border bg-card p-3.5" style={cardShadow}>
               <Text className="text-[11px] font-semibold text-muted-foreground">Alış</Text>
-              <Text className="mt-1 text-base font-extrabold text-foreground">{formatCurrency(totalPurchase)}</Text>
+              <Text className="mt-1 text-base font-extrabold text-foreground">
+                {formatCurrency(totalPurchase)}
+              </Text>
             </View>
             <View className="flex-1 rounded-2xl border border-border bg-card p-3.5" style={cardShadow}>
               <Text className="text-[11px] font-semibold text-muted-foreground">Parça Satışı</Text>
-              <Text className="mt-1 text-base font-extrabold text-foreground">{formatCurrency(totalSale)}</Text>
+              <Text className="mt-1 text-base font-extrabold text-foreground">
+                {formatCurrency(totalSale)}
+              </Text>
             </View>
             <View className="flex-1 rounded-2xl border border-border bg-card p-3.5" style={cardShadow}>
               <Text className="text-[11px] font-semibold text-muted-foreground">Kâr</Text>
@@ -517,18 +961,102 @@ function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
             </View>
           </View>
 
-          <Text className="mb-2 mt-5 text-sm font-bold text-muted-foreground">
-            Ürün bazlı özet · detay için dokun
-          </Text>
+          {activeRows.length > 0 ? (
+            <View className="mt-3 flex-row gap-2">
+              <Pressable
+                onPress={() => void exportExcel()}
+                disabled={!!exporting}
+                className="h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl border border-border bg-card active:opacity-90"
+                style={cardShadow}
+              >
+                {exporting === 'excel' ? (
+                  <ActivityIndicator color={colors.primary} size="small" />
+                ) : (
+                  <FileSpreadsheet size={18} color={colors.primary} />
+                )}
+                <Text className="text-sm font-bold text-foreground">Excel</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void exportPdf()}
+                disabled={!!exporting}
+                className="h-11 flex-1 flex-row items-center justify-center gap-2 rounded-xl border border-border bg-card active:opacity-90"
+                style={cardShadow}
+              >
+                {exporting === 'pdf' ? (
+                  <ActivityIndicator color={colors.primary} size="small" />
+                ) : (
+                  <FileText size={18} color={colors.primary} />
+                )}
+                <Text className="text-sm font-bold text-foreground">PDF</Text>
+              </Pressable>
+            </View>
+          ) : null}
 
-          {rows.length === 0 ? (
+          <Text className="mb-2 mt-5 text-sm font-bold text-muted-foreground">{listHint}</Text>
+
+          {activeRows.length === 0 ? (
             <EmptyState label="Seçilen tarih aralığında alış/satış hareketi bulunamadı." />
+          ) : groupBy === 'vehicle' ? (
+            <View className="flex flex-col gap-3">
+              {vehicleRows.map((r) => (
+                <Pressable
+                  key={r.vehicleId}
+                  onPress={() => void openVehicleDetail(r)}
+                  className="rounded-2xl border border-border bg-card p-4 active:opacity-90"
+                  style={cardShadow}
+                >
+                  <View className="flex-row items-center justify-between">
+                    <Text className="min-w-0 flex-1 text-sm font-bold text-foreground" numberOfLines={1}>
+                      {r.plate}
+                    </Text>
+                    <ChevronRight size={18} color={colors.mutedForeground} />
+                  </View>
+                  <Text className="mt-0.5 text-xs text-muted-foreground" numberOfLines={1}>
+                    {[r.brand, r.model].filter(Boolean).join(' ')}
+                    {r.customerName ? ` · ${r.customerName}` : ''}
+                    {` · ${r.totalQuantity} adet`}
+                  </Text>
+                  <ProfitAmounts
+                    purchase={r.totalPurchaseAmount}
+                    sale={r.totalSaleAmount}
+                    profit={r.profit}
+                  />
+                </Pressable>
+              ))}
+            </View>
+          ) : groupBy === 'supplier' ? (
+            <View className="flex flex-col gap-3">
+              {supplierRows.map((r, i) => (
+                <Pressable
+                  key={`${r.source}-${r.supplierId ?? 'x'}-${i}`}
+                  onPress={() => void openSupplierDetail(r)}
+                  className="rounded-2xl border border-border bg-card p-4 active:opacity-90"
+                  style={cardShadow}
+                >
+                  <View className="flex-row items-center justify-between gap-2">
+                    <Text className="min-w-0 flex-1 text-sm font-bold text-foreground" numberOfLines={1}>
+                      {r.supplierName}
+                    </Text>
+                    <Text className="rounded-full bg-secondary px-2 py-0.5 text-[10px] font-bold text-muted-foreground">
+                      {r.source === 'disaridan' ? 'Dışarıdan' : 'Stok'}
+                    </Text>
+                    <ChevronRight size={18} color={colors.mutedForeground} />
+                  </View>
+                  <Text className="mt-0.5 text-xs text-muted-foreground">{r.totalQuantity} adet kullanıldı</Text>
+                  <ProfitAmounts
+                    purchase={r.totalPurchaseAmount}
+                    sale={r.totalSaleAmount}
+                    profit={r.profit}
+                  />
+                </Pressable>
+              ))}
+            </View>
           ) : (
             <View className="flex flex-col gap-3">
-              {rows.map((r, i) => (
+              {productRows.map((r, i) => (
                 <Pressable
                   key={`${r.stockProductId ?? 'x'}-${r.name}-${i}`}
-                  onPress={() => void openDetail(r)}
+                  onPress={() => void openProductDetail(r)}
                   className="rounded-2xl border border-border bg-card p-4 active:opacity-90"
                   style={cardShadow}
                 >
@@ -539,22 +1067,11 @@ function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
                     <ChevronRight size={18} color={colors.mutedForeground} />
                   </View>
                   <Text className="mt-0.5 text-xs text-muted-foreground">{r.totalQuantity} adet kullanıldı</Text>
-                  <View className="mt-2 flex-row items-center gap-4">
-                    <Text className="text-xs font-semibold text-muted-foreground">
-                      Alış: <Text className="text-foreground">{formatCurrency(r.totalPurchaseAmount)}</Text>
-                    </Text>
-                    <Text className="text-xs font-semibold text-muted-foreground">
-                      Satış: <Text className="text-foreground">{formatCurrency(r.totalSaleAmount)}</Text>
-                    </Text>
-                    <Text
-                      className={cn(
-                        'text-xs font-bold',
-                        r.profit >= 0 ? 'text-chart-2' : 'text-destructive',
-                      )}
-                    >
-                      Kâr: {formatCurrency(r.profit)}
-                    </Text>
-                  </View>
+                  <ProfitAmounts
+                    purchase={r.totalPurchaseAmount}
+                    sale={r.totalSaleAmount}
+                    profit={r.profit}
+                  />
                 </Pressable>
               ))}
             </View>
@@ -563,12 +1080,12 @@ function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
       )}
 
       <AppSheet
-        visible={!!detailRow}
+        visible={!!detailTitle}
         onClose={() => {
-          setDetailRow(null)
+          setDetailTitle(null)
           setDetail([])
         }}
-        title={detailRow?.name ?? 'Hareketler'}
+        title={detailTitle ?? 'Hareketler'}
         subtitle={`${range.rangeLabel} · ${detail.length} hareket`}
       >
         {detailLoading ? (
@@ -576,34 +1093,41 @@ function StockPurchaseSaleScreen({ onBack }: { onBack: () => void }) {
             <ActivityIndicator color={colors.primary} />
           </View>
         ) : detail.length === 0 ? (
-          <Text className="py-6 text-center text-sm text-muted-foreground">Bu aralıkta hareket bulunamadı.</Text>
+          <Text className="py-6 text-center text-sm text-muted-foreground">
+            Bu aralıkta hareket bulunamadı.
+          </Text>
         ) : (
           <View className="flex flex-col gap-2">
-            {detail.map((d, i) => (
-              <View key={i} className="rounded-xl border border-border bg-card px-3 py-2.5">
-                <View className="flex-row items-center justify-between">
-                  <Text className="text-sm font-bold text-foreground">{d.plate}</Text>
-                  <Text className="text-[11px] text-muted-foreground">{formatDate(d.date)}</Text>
-                </View>
-                <Text className="mt-0.5 text-xs text-muted-foreground">{d.customerName}</Text>
-                <View className="mt-1.5 flex-row items-center gap-4">
-                  <Text className="text-xs font-semibold text-muted-foreground">
-                    Alış: <Text className="text-foreground">
-                      {formatCurrency((d.purchasePrice ?? 0) * d.quantity)}
+            {detail.map((d, i) => {
+              const purchase = (d.purchasePrice ?? 0) * d.quantity
+              const sale = d.unitPrice * d.quantity
+              const profit = sale - purchase
+              const partLabel = d.partName?.trim() || 'Parça'
+              return (
+                <View key={i} className="rounded-xl border border-border bg-card px-3 py-2.5">
+                  <View className="flex-row items-start justify-between gap-2">
+                    <Text className="min-w-0 flex-1 text-sm font-bold text-foreground" numberOfLines={2}>
+                      {partLabel}
                     </Text>
-                    {d.supplierName ? ` (${d.supplierName})` : ''}
+                    <Text className="text-[11px] text-muted-foreground">{formatDate(d.date)}</Text>
+                  </View>
+                  <Text className="mt-0.5 text-xs text-muted-foreground">
+                    {d.plate}
+                    {d.customerName ? ` · ${d.customerName}` : ''}
+                    {` · ${d.quantity} adet`}
                   </Text>
-                  <Text className="text-xs font-semibold text-muted-foreground">
-                    Satış: <Text className="text-foreground">{formatCurrency(d.unitPrice * d.quantity)}</Text>
-                  </Text>
+                  {d.supplierName ? (
+                    <Text className="mt-0.5 text-[11px] text-muted-foreground">Kaynak: {d.supplierName}</Text>
+                  ) : null}
+                  <ProfitAmounts purchase={purchase} sale={sale} profit={profit} />
                 </View>
-              </View>
-            ))}
+              )
+            })}
           </View>
         )}
         <SheetCancelButton
           onPress={() => {
-            setDetailRow(null)
+            setDetailTitle(null)
             setDetail([])
           }}
           label="Kapat"
@@ -895,29 +1419,78 @@ function SalesReportScreen({ onBack }: { onBack: () => void }) {
             ) : null}
           </View>
 
-          <Text className="mb-2 mt-5 text-sm font-bold text-muted-foreground">En Çok Satılan Hizmetler</Text>
-          {report.topServices.length === 0 ? (
-            <Text className="py-2 text-center text-sm text-muted-foreground">Bu aralıkta işçilik kaydı yok.</Text>
-          ) : (
-            <View className="flex flex-col gap-2">
-              {report.topServices.map((s, i) => (
-                <View
-                  key={`${s.title}-${i}`}
-                  className="flex-row items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
-                >
-                  <Text className="text-xs font-extrabold text-muted-foreground">#{i + 1}</Text>
-                  <View className="min-w-0 flex-1">
-                    <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
-                      {s.title}
-                    </Text>
-                    <Text className="text-xs text-muted-foreground">{s.count} kez</Text>
-                  </View>
-                  <Text className="text-sm font-extrabold text-foreground">{formatCurrency(s.totalAmount)}</Text>
-                </View>
-              ))}
-            </View>
-          )}
+          <RankedSalesSection
+            title="En Çok Yapılan İşler"
+            emptyText="Bu aralıkta işçilik kaydı yok."
+            rows={report.topJobs.map((j) => ({
+              key: j.title,
+              label: j.title,
+              meta: `${j.count} kez`,
+              amount: j.totalAmount,
+            }))}
+          />
+
+          <RankedSalesSection
+            title="En Çok Satılan Hizmetler"
+            emptyText="Bu aralıkta hizmet kaydı yok."
+            rows={report.topServices.map((s) => ({
+              key: s.title,
+              label: s.title,
+              meta: `${s.count} kez`,
+              amount: s.totalAmount,
+            }))}
+          />
+
+          <RankedSalesSection
+            title="En Çok Satılan Yedek Parçalar"
+            emptyText="Bu aralıkta yedek parça satışı yok."
+            rows={report.topParts.map((p) => ({
+              key: p.name,
+              label: p.name,
+              meta: `${p.quantity} adet`,
+              amount: p.totalAmount,
+            }))}
+          />
         </ScrollView>
+      )}
+    </View>
+  )
+}
+
+function RankedSalesSection({
+  title,
+  emptyText,
+  rows,
+}: {
+  title: string
+  emptyText: string
+  rows: { key: string; label: string; meta: string; amount: number }[]
+}) {
+  return (
+    <View>
+      <Text className="mb-2 mt-5 text-sm font-bold text-muted-foreground">{title}</Text>
+      {rows.length === 0 ? (
+        <Text className="py-2 text-center text-sm text-muted-foreground">{emptyText}</Text>
+      ) : (
+        <View className="flex flex-col gap-2">
+          {rows.map((row, i) => (
+            <View
+              key={`${row.key}-${i}`}
+              className="flex-row items-center gap-3 rounded-xl border border-border bg-card px-4 py-3"
+            >
+              <Text className="text-xs font-extrabold text-muted-foreground">#{i + 1}</Text>
+              <View className="min-w-0 flex-1">
+                <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+                  {row.label}
+                </Text>
+                <Text className="text-xs text-muted-foreground">{row.meta}</Text>
+              </View>
+              <Text className="text-sm font-extrabold text-foreground">
+                {formatCurrency(row.amount)}
+              </Text>
+            </View>
+          ))}
+        </View>
       )}
     </View>
   )

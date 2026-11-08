@@ -238,10 +238,15 @@ export function Products({
                     <Text className="mt-1 text-base font-bold text-foreground" numberOfLines={1}>
                       {p.name}
                     </Text>
-                    <View className="mt-1 flex-row items-center gap-3">
+                    <View className="mt-1 flex-row flex-wrap items-center gap-x-3 gap-y-0.5">
                       <Text className="text-base font-extrabold text-primary">
-                        {formatCurrency(p.price)}
+                        Satış {formatCurrency(p.price)}
                       </Text>
+                      {p.purchasePrice != null && p.purchasePrice > 0 ? (
+                        <Text className="text-sm font-semibold text-muted-foreground">
+                          Alış {formatCurrency(p.purchasePrice)}
+                        </Text>
+                      ) : null}
                       <View className="flex-row items-center gap-1">
                         {low && <AlertTriangle size={16} color={colors.destructive} />}
                         <Text
@@ -298,6 +303,11 @@ function ProductForm({
   const [code, setCode] = useState(initial?.code ?? '')
   const [category, setCategory] = useState<StockCategory>(initial?.category ?? 'diger')
   const [price, setPrice] = useState(initial ? String(initial.price) : '')
+  const [purchasePrice, setPurchasePrice] = useState(
+    initial?.purchasePrice != null && initial.purchasePrice > 0
+      ? String(initial.purchasePrice)
+      : '',
+  )
   const [stock, setStock] = useState(initial ? String(initial.stock) : '')
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
@@ -307,9 +317,15 @@ function ProductForm({
       setError('Lütfen ürün adını girin.')
       return
     }
-    const priceNum = Number(price)
+    const priceNum = Number(price.replace(',', '.'))
     if (!priceNum || priceNum <= 0) {
-      setError('Lütfen geçerli bir fiyat girin.')
+      setError('Lütfen geçerli bir satış fiyatı girin.')
+      return
+    }
+    const purchaseRaw = purchasePrice.trim().replace(',', '.')
+    const purchaseNum = purchaseRaw === '' ? undefined : Number(purchaseRaw)
+    if (purchaseNum != null && (Number.isNaN(purchaseNum) || purchaseNum < 0)) {
+      setError('Alış fiyatı geçersiz.')
       return
     }
     setSaving(true)
@@ -320,10 +336,11 @@ function ProductForm({
         code: code.trim() || '-',
         category,
         price: priceNum,
+        purchasePrice: purchaseNum != null && purchaseNum > 0 ? purchaseNum : undefined,
         stock: Number(stock) || 0,
       })
-    } catch {
-      setError('Kayıt başarısız. Bilgileri kontrol edip tekrar deneyin.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Kayıt başarısız. Bilgileri kontrol edip tekrar deneyin.')
     } finally {
       setSaving(false)
     }
@@ -350,6 +367,12 @@ function ProductForm({
         showsVerticalScrollIndicator={false}
       >
         <View className="flex flex-col gap-4">
+          <TextField
+            label="Ürün Kodu (isteğe bağlı)"
+            value={code}
+            onChange={setCode}
+            placeholder="Örn. APS 14"
+          />
           <TextField label="Ürün Adı" value={name} onChange={setName} placeholder="Örn. Motor Yağı 5W-30" />
           <SelectField
             label="Kategori"
@@ -357,30 +380,31 @@ function ProductForm({
             onChange={(v) => setCategory(v as StockCategory)}
             options={categoryOptions}
           />
-          <TextField
-            label="Ürün Kodu (isteğe bağlı)"
-            value={code}
-            onChange={setCode}
-            placeholder="Örn. YG-530-5"
-          />
           <View className="flex-row gap-3">
             <TextField
-              label="Fiyat (₺)"
+              label="Alış fiyatı (₺)"
+              value={purchasePrice}
+              onChange={setPurchasePrice}
+              placeholder="0"
+              inputMode="numeric"
+              className="flex-1"
+            />
+            <TextField
+              label="Satış fiyatı (₺)"
               value={price}
               onChange={setPrice}
               placeholder="0"
               inputMode="numeric"
               className="flex-1"
             />
-            <TextField
-              label="Stok (adet)"
-              value={stock}
-              onChange={setStock}
-              placeholder="0"
-              inputMode="numeric"
-              className="flex-1"
-            />
           </View>
+          <TextField
+            label="Stok (adet)"
+            value={stock}
+            onChange={setStock}
+            placeholder="0"
+            inputMode="numeric"
+          />
 
           {error !== '' && (
             <View className="rounded-xl bg-destructive/10 px-4 py-3">

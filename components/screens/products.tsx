@@ -198,6 +198,11 @@ function ProductForm({
     initial?.category ?? 'diger',
   )
   const [price, setPrice] = useState(initial ? String(initial.price) : '')
+  const [purchasePrice, setPurchasePrice] = useState(
+    initial && 'purchasePrice' in initial && initial.purchasePrice != null && initial.purchasePrice > 0
+      ? String(initial.purchasePrice)
+      : '',
+  )
   const [stock, setStock] = useState(initial ? String(initial.stock) : '')
   const [error, setError] = useState('')
 
@@ -206,9 +211,15 @@ function ProductForm({
       setError('Lütfen ürün adını girin.')
       return
     }
-    const priceNum = Number(price)
+    const priceNum = Number(price.replace(',', '.'))
     if (!priceNum || priceNum <= 0) {
-      setError('Lütfen geçerli bir fiyat girin.')
+      setError('Lütfen geçerli bir satış fiyatı girin.')
+      return
+    }
+    const purchaseRaw = purchasePrice.trim().replace(',', '.')
+    const purchaseNum = purchaseRaw === '' ? undefined : Number(purchaseRaw)
+    if (purchaseNum != null && (Number.isNaN(purchaseNum) || purchaseNum < 0)) {
+      setError('Alış fiyatı geçersiz.')
       return
     }
     onSave({
@@ -216,8 +227,9 @@ function ProductForm({
       code: code.trim() || '-',
       category,
       price: priceNum,
+      ...(purchaseNum != null && purchaseNum > 0 ? { purchasePrice: purchaseNum } : {}),
       stock: Number(stock) || 0,
-    })
+    } as Omit<StockProduct, 'id'>)
   }
 
   return (
@@ -257,22 +269,29 @@ function ProductForm({
         />
         <div className="flex gap-3">
           <TextField
-            label="Fiyat (₺)"
-            value={price}
-            onChange={setPrice}
+            label="Alış fiyatı (₺)"
+            value={purchasePrice}
+            onChange={setPurchasePrice}
             placeholder="0"
-            inputMode="numeric"
+            inputMode="decimal"
             className="flex-1"
           />
           <TextField
-            label="Stok (adet)"
-            value={stock}
-            onChange={setStock}
+            label="Satış fiyatı (₺)"
+            value={price}
+            onChange={setPrice}
             placeholder="0"
-            inputMode="numeric"
+            inputMode="decimal"
             className="flex-1"
           />
         </div>
+        <TextField
+          label="Stok (adet)"
+          value={stock}
+          onChange={setStock}
+          placeholder="0"
+          inputMode="numeric"
+        />
 
         {error && (
           <p className="rounded-xl bg-destructive/10 px-4 py-3 text-sm font-semibold text-destructive">

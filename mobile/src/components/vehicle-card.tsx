@@ -2,10 +2,13 @@ import { Pressable, Text, View } from 'react-native'
 import { ChevronRight, User } from 'lucide-react-native'
 import type { Customer, Vehicle } from '@/lib/types'
 import { StatusBadge } from '@/components/status-badge'
-import { formatDateTime } from '@/lib/format'
+import { formatDateTime, formatVisitLabel } from '@/lib/format'
 import { colors } from '@/lib/theme'
 
-export type VehicleCardData = Pick<Vehicle, 'plate' | 'brand' | 'model' | 'status' | 'createdAt'> & {
+export type VehicleCardData = Pick<
+  Vehicle,
+  'plate' | 'brand' | 'model' | 'status' | 'createdAt' | 'visitNumber'
+> & {
   customer: Pick<Customer, 'name'>
 }
 
@@ -16,6 +19,7 @@ export function VehicleCard({
   vehicle: VehicleCardData
   onPress: () => void
 }) {
+  const visitLabel = formatVisitLabel(vehicle.visitNumber)
   return (
     <Pressable
       onPress={onPress}
@@ -24,10 +28,17 @@ export function VehicleCard({
     >
       <View className="flex-1">
         <View className="flex-row items-center justify-between gap-2">
-          <View className="rounded-lg bg-foreground px-2.5 py-1">
-            <Text className="font-mono text-sm font-bold tracking-wide text-background">
-              {vehicle.plate}
-            </Text>
+          <View className="flex-row items-center gap-2">
+            <View className="rounded-lg bg-foreground px-2.5 py-1">
+              <Text className="font-mono text-sm font-bold tracking-wide text-background">
+                {vehicle.plate}
+              </Text>
+            </View>
+            {visitLabel ? (
+              <View className="rounded-md bg-secondary px-2 py-1">
+                <Text className="text-xs font-bold text-secondary-foreground">{visitLabel}</Text>
+              </View>
+            ) : null}
           </View>
           <StatusBadge status={vehicle.status} />
         </View>

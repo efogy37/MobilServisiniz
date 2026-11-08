@@ -109,7 +109,8 @@ IF NOT EXISTS (SELECT 1 FROM dbo.ref_fuel_types)
 IF NOT EXISTS (SELECT 1 FROM dbo.ref_stock_categories)
     INSERT INTO dbo.ref_stock_categories (code, label, sort_order) VALUES
     (N'yag',N'Yağ',1),(N'filtre',N'Filtre',2),(N'fren',N'Fren',3),
-    (N'lastik',N'Lastik',4),(N'elektrik',N'Elektrik',5),(N'diger',N'Diğer',6);
+    (N'lastik',N'Lastik',4),(N'elektrik',N'Elektrik',5),
+    (N'motor',N'Motor',6),(N'mekanik',N'Mekanik',7),(N'diger',N'Diğer',8);
 
 IF NOT EXISTS (SELECT 1 FROM dbo.ref_service_categories)
     INSERT INTO dbo.ref_service_categories (code, label, sort_order) VALUES
@@ -308,7 +309,7 @@ BEGIN
         brand_id     uniqueidentifier NULL,
         model_id     uniqueidentifier NULL,
         plate        nvarchar(20)     NOT NULL,
-        plate_norm   AS (CONVERT(nvarchar(20), UPPER(REPLACE(plate, N' ', N'')))) PERSISTED,
+        plate_norm   AS (CAST(UPPER(REPLACE(plate, N' ', N'')) AS nvarchar(20))) PERSISTED,
         brand        nvarchar(60)     NOT NULL CONSTRAINT DF_vehicles_brand DEFAULT N'',
         model        nvarchar(80)     NOT NULL CONSTRAINT DF_vehicles_model DEFAULT N'',
         model_year   smallint         NULL,
@@ -331,7 +332,7 @@ BEGIN
         CONSTRAINT CK_vehicles_year CHECK (model_year IS NULL OR model_year BETWEEN 1900 AND 2100),
         CONSTRAINT CK_vehicles_mileage CHECK (mileage IS NULL OR mileage >= 0)
     );
-    CREATE UNIQUE INDEX UX_vehicles_plate ON dbo.vehicles(shop_id, plate_norm);
+    CREATE UNIQUE INDEX UX_vehicles_plate ON dbo.vehicles(shop_id, plate_norm) WHERE is_active = 1;
     CREATE INDEX IX_vehicles_shop ON dbo.vehicles(shop_id);
     CREATE INDEX IX_vehicles_customer ON dbo.vehicles(customer_id);
 END

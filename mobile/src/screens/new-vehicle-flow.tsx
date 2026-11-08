@@ -34,6 +34,7 @@ import {
 import { scanRuhsat } from '@/lib/ai-scan'
 import { getCachedEntitlements } from '@/lib/api'
 import { TextField, TextArea, SelectField } from '@/components/form-field'
+import { ArrivalDateField, turkeyTodayIso } from '@/components/arrival-date-field'
 import { KeyboardAwareScrollView } from '@/components/keyboard-aware-scroll'
 import { colors, withAlpha } from '@/lib/theme'
 import { PlateConflictError } from '@/lib/api'
@@ -88,6 +89,7 @@ export function NewVehicleFlow({
 
   const [complaint, setComplaint] = useState('')
   const [complaintCategory, setComplaintCategory] = useState<ComplaintCategory>('diger')
+  const [arrivalDate, setArrivalDate] = useState(turkeyTodayIso)
 
   async function pickImage(source: 'camera' | 'gallery') {
     if (source === 'camera') {
@@ -98,7 +100,7 @@ export function NewVehicleFlow({
       }
       return ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        quality: 0.7,
+        quality: 0.45,
         base64: true,
         exif: false,
       })
@@ -115,7 +117,7 @@ export function NewVehicleFlow({
     try {
       return await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        quality: 0.7,
+        quality: 0.45,
         base64: true,
         exif: false,
         allowsMultipleSelection: false,
@@ -125,7 +127,7 @@ export function NewVehicleFlow({
     } catch {
       return ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        quality: 0.7,
+        quality: 0.45,
         base64: true,
         exif: false,
         allowsMultipleSelection: false,
@@ -230,14 +232,15 @@ export function NewVehicleFlow({
       engineVolume,
       km,
       status: 'bekliyor',
-      createdAt: now,
+      // YYYY-MM-DD → createVehicleApi openedAt olarak gönderilir
+      createdAt: arrivalDate || now,
       customer,
       complaints: complaint.trim()
         ? [
             {
               id: uid(),
               text: complaint.trim(),
-              createdAt: now,
+              createdAt: arrivalDate || now,
               category: complaintCategory,
             },
           ]
@@ -430,6 +433,7 @@ export function NewVehicleFlow({
               rows={5}
               placeholder="Örn: Motordan ses geliyor, fren balataları ses yapıyor..."
             />
+            <ArrivalDateField value={arrivalDate} onChange={setArrivalDate} />
             <StepButton onPress={handleSave} variant="accent">
               <Check size={20} color={colors.accentForeground} />
               <Text className="text-base font-extrabold text-accent-foreground">

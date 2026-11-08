@@ -3,18 +3,22 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, Text, View } from 'rea
 import {
   CarFront,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
-  History,
   MapPin,
+  Package,
   Pencil,
   Phone,
   Plus,
   Receipt,
+  Wrench,
   Wallet,
 } from 'lucide-react-native'
 import type { Customer } from '@/lib/types'
+import { STATUS_LABELS } from '@/lib/types'
 import { colors } from '@/lib/theme'
-import { cardShadow, VehicleCard } from '@/components/vehicle-card'
+import { cardShadow } from '@/components/vehicle-card'
+import { StatusBadge } from '@/components/status-badge'
 import { CustomerForm } from '@/screens/customers'
 import { TextField, TextArea } from '@/components/form-field'
 import {
@@ -22,19 +26,24 @@ import {
   SupplierTxGroupedList,
   SUPPLIER_TX_LABELS,
 } from '@/components/supplier-tx-detail'
-import { formatCurrency, formatDate, formatTime } from '@/lib/format'
+import {
+  formatCurrency,
+  formatDateTime,
+  formatVisitLabel,
+} from '@/lib/format'
 import {
   deleteSupplierTransaction,
-  getCustomerActivity,
   getSupplierLedger,
+  getVehicleServiceHistory,
   loadVehiclesByCustomer,
   recordSupplierDiscount,
   recordSupplierPayment,
   updateSupplierTransaction,
-  type ActivityLogEntry,
   type CustomerVehicleSummary,
   type SupplierLedger,
   type SupplierTransaction,
+  type VehicleServiceHistory,
+  type VehicleVisitHistory,
 } from '@/lib/api'
 
 export function CustomerDetail({
@@ -42,6 +51,7 @@ export function CustomerDetail({
   onBack: _onBack,
   onUpdate,
   onOpenVehicle,
+  onOpenWorkOrder,
   onChanged,
   allowSuppliers = true,
 }: {
@@ -49,16 +59,19 @@ export function CustomerDetail({
   onBack: () => void
   onUpdate: (id: string, c: Omit<Customer, 'id'>) => void
   onOpenVehicle: (vehicleId: string) => void
+  onOpenWorkOrder?: (workOrderId: string, vehicleId: string) => void
   onChanged: () => void
   allowSuppliers?: boolean
 }) {
   const [editing, setEditing] = useState(false)
   const [vehicles, setVehicles] = useState<CustomerVehicleSummary[]>([])
   const [loading, setLoading] = useState(true)
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
     setLoading(true)
+    setExpandedId(null)
     loadVehiclesByCustomer(customer.id)
       .then((rows) => {
         if (active) setVehicles(rows)
@@ -155,100 +168,227 @@ export function CustomerDetail({
         ) : (
           <View className="flex flex-col gap-2">
             {vehicles.map((v) => (
-              <VehicleCard
+              <CustomerVehicleExpandable
                 key={v.id}
-                vehicle={{
-                  plate: v.plate,
-                  brand: v.brand,
-                  model: v.model,
-                  status: v.status,
-                  createdAt: new Date().toISOString(),
-                  customer: { name: customer.name },
-                }}
-                onPress={() => onOpenVehicle(v.id)}
+                vehicle={v}
+                expanded={expandedId === v.id}
+                onToggle={() =>
+                  setExpandedId((prev) => (prev === v.id ? null : v.id))
+                }
+                onOpenVehicle={() => onOpenVehicle(v.id)}
+                onOpenWorkOrder={
+                  onOpenWorkOrder
+                    ? (workOrderId) => onOpenWorkOrder(workOrderId, v.id)
+                    : undefined
+                }
               />
             ))}
           </View>
         )}
-
-        <View className="mt-6">
-          <ActivityHistorySection customerId={customer.id} />
-        </View>
       </View>
     </ScrollView>
   )
 }
 
-function ActivityHistorySection({ customerId }: { customerId: string }) {
-  const [open, setOpen] = useState(false)
+function CustomerVehicleExpandable({
+  vehicle,
+  expanded,
+  onToggle,
+  onOpenVehicle,
+  onOpenWorkOrder,
+}: {
+  vehicle: CustomerVehicleSummary
+  expanded: boolean
+  onToggle: () => void
+  onOpenVehicle: () => void
+  onOpenWorkOrder?: (workOrderId: string) => void
+}) {
   const [loading, setLoading] = useState(false)
-  const [loaded, setLoaded] = useState(false)
-  const [entries, setEntries] = useState<ActivityLogEntry[]>([])
+  const [history, setHistory] = useState<VehicleServiceHistory | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
-  function toggle() {
-    const next = !open
-    setOpen(next)
-    if (next && !loaded) {
-      setLoading(true)
-      getCustomerActivity(customerId)
-        .then((rows) => {
-          setEntries(rows)
-          setLoaded(true)
-        })
-        .catch(() => setEntries([]))
-        .finally(() => setLoading(false))
+  useEffect(() => {
+    if (!expanded || history) return
+    let active = true
+    setLoading(true)
+    setError(null)
+    getVehicleServiceHistory(vehicle.id)
+      .then((h) => {
+        if (active) setHistory(h)
+      })
+      .catch((e) => {
+        if (active) {
+          setError(e instanceof Error ? e.message : 'Geçmiş yüklenemedi.')
+          setHistory(null)
+        }
+      })
+      .finally(() => {
+        if (active) setLoading(false)
+      })
+    return () => {
+      active = false
     }
-  }
+  }, [expanded, history, vehicle.id])
 
   return (
-    <View className="rounded-2xl border border-border bg-card" style={cardShadow}>
+    <View className="overflow-hidden rounded-2xl border border-border bg-card" style={cardShadow}>
       <Pressable
-        onPress={toggle}
-        className="flex-row items-center justify-between px-4 py-3.5"
+        onPress={onToggle}
+        className="flex-row items-center gap-3 p-4 active:bg-muted"
       >
-        <View className="flex-row items-center gap-2">
-          <History size={16} color={colors.primary} />
-          <Text className="text-sm font-bold text-foreground">Aktivite Geçmişi</Text>
+        <View className="min-w-0 flex-1">
+          <View className="flex-row items-center justify-between gap-2">
+            <View className="rounded-lg bg-foreground px-2.5 py-1">
+              <Text className="font-mono text-sm font-bold tracking-wide text-background">
+                {vehicle.plate}
+              </Text>
+            </View>
+            <StatusBadge status={vehicle.status} />
+          </View>
+          <Text className="mt-2 text-base font-bold text-foreground">
+            {vehicle.brand} {vehicle.model}
+          </Text>
+          <Text className="mt-1 text-xs text-muted-foreground">
+            {expanded ? 'Hizmet ve ürünleri gizle' : 'Hizmet ve ürünleri gör'}
+          </Text>
         </View>
-        {open ? (
-          <ChevronUp size={18} color={colors.mutedForeground} />
+        {expanded ? (
+          <ChevronUp size={20} color={colors.mutedForeground} />
         ) : (
-          <ChevronDown size={18} color={colors.mutedForeground} />
+          <ChevronDown size={20} color={colors.mutedForeground} />
         )}
       </Pressable>
-      {open ? (
-        <View className="border-t border-border px-4 pb-3 pt-2">
+
+      {expanded ? (
+        <View className="border-t border-border px-4 pb-4 pt-3">
           {loading ? (
             <View className="items-center py-6">
               <ActivityIndicator color={colors.primary} />
             </View>
-          ) : entries.length === 0 ? (
+          ) : error ? (
+            <Text className="py-3 text-xs text-destructive">{error}</Text>
+          ) : !history || history.visits.length === 0 ? (
             <Text className="py-3 text-xs text-muted-foreground">
-              Henüz bir aktivite kaydı yok.
+              Bu araç için servis kaydı yok.
             </Text>
           ) : (
-            entries.map((e, i) => (
-              <View
-                key={e.id}
-                className={
-                  i > 0
-                    ? 'border-t border-border py-2.5'
-                    : 'py-2.5'
-                }
-              >
-                <Text className="text-sm font-medium text-foreground">{e.description}</Text>
-                <View className="mt-1 flex-row items-center justify-between">
-                  <Text className="text-xs text-muted-foreground">
-                    {e.userName ?? 'Sistem'}
+            <View className="gap-3">
+              {history.visits.map((visit) => (
+                <VisitHistoryBlock
+                  key={visit.workOrderId}
+                  visit={visit}
+                  onOpenWorkOrder={
+                    onOpenWorkOrder ? () => onOpenWorkOrder(visit.workOrderId) : undefined
+                  }
+                />
+              ))}
+            </View>
+          )}
+
+          <Pressable
+            onPress={onOpenVehicle}
+            className="mt-3 h-11 flex-row items-center justify-center gap-1.5 rounded-xl bg-secondary active:opacity-90"
+          >
+            <Text className="text-sm font-bold text-secondary-foreground">Yeni servis kaydı</Text>
+            <ChevronRight size={16} color={colors.secondaryForeground} />
+          </Pressable>
+        </View>
+      ) : null}
+    </View>
+  )
+}
+
+function VisitHistoryBlock({
+  visit,
+  onOpenWorkOrder,
+}: {
+  visit: VehicleVisitHistory
+  onOpenWorkOrder?: () => void
+}) {
+  const visitLabel = formatVisitLabel(visit.visitNumber)
+  const hasServices = visit.services.length > 0
+  const hasParts = visit.parts.length > 0
+
+  return (
+    <View className="rounded-xl border border-border bg-secondary/40 px-3 py-3">
+      <View className="flex-row items-center justify-between gap-2">
+        <Text className="text-xs font-bold text-foreground">
+          #{visit.orderNo}
+          {visitLabel ? ` · ${visitLabel}` : ''}
+        </Text>
+        <Text className="text-[11px] text-muted-foreground">
+          {formatDateTime(visit.openedAt)}
+        </Text>
+      </View>
+      <Text className="mt-0.5 text-[11px] text-muted-foreground">
+        {STATUS_LABELS[visit.status]}
+      </Text>
+
+      {!hasServices && !hasParts ? (
+        <Text className="mt-2 text-xs text-muted-foreground">
+          Bu kayıtta hizmet veya ürün yok.
+        </Text>
+      ) : (
+        <View className="mt-2 gap-2">
+          {hasServices ? (
+            <View>
+              <View className="mb-1 flex-row items-center gap-1.5">
+                <Wrench size={12} color={colors.mutedForeground} />
+                <Text className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                  Hizmetler
+                </Text>
+              </View>
+              {visit.services.map((s) => (
+                <View
+                  key={s.id}
+                  className="flex-row items-center justify-between gap-2 py-1"
+                >
+                  <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={2}>
+                    {s.title}
                   </Text>
-                  <Text className="text-xs font-medium text-muted-foreground">
-                    {formatDate(e.createdAt)} {formatTime(e.createdAt)}
+                  <Text className="text-sm font-semibold text-foreground">
+                    {formatCurrency(s.price)}
                   </Text>
                 </View>
+              ))}
+            </View>
+          ) : null}
+
+          {hasParts ? (
+            <View>
+              <View className="mb-1 flex-row items-center gap-1.5">
+                <Package size={12} color={colors.mutedForeground} />
+                <Text className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                  Ürünler
+                </Text>
               </View>
-            ))
-          )}
+              {visit.parts.map((p) => (
+                <View
+                  key={p.id}
+                  className="flex-row items-center justify-between gap-2 py-1"
+                >
+                  <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={2}>
+                    {p.name}
+                    {p.quantity > 1 ? ` ×${p.quantity}` : ''}
+                  </Text>
+                  <Text className="text-sm font-semibold text-foreground">
+                    {formatCurrency(p.unitPrice * p.quantity)}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ) : null}
         </View>
+      )}
+
+      {onOpenWorkOrder ? (
+        <Pressable
+          onPress={onOpenWorkOrder}
+          className="mt-2.5 h-10 flex-row items-center justify-center gap-1 rounded-lg border border-border bg-card active:opacity-90"
+        >
+          <Text className="text-xs font-bold text-foreground">Servis kaydına git</Text>
+          <ChevronRight size={14} color={colors.foreground} />
+        </Pressable>
       ) : null}
     </View>
   )

@@ -18,10 +18,11 @@ $ServerUser = "administrator"
 #   $env:OTOSERVIS_SERVER_PASS = "..."
 # olarak ayarlayin (veya PowerShell profilinizde tanimlayin).
 $ServerPass = $env:OTOSERVIS_SERVER_PASS
-if (-not $RemoteBaseDir) { $RemoteBaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\OtoServis" } }
+if (-not $RemoteBaseDir) { $RemoteBaseDir = if ($env:OTOSERVIS_BASE_DIR) { $env:OTOSERVIS_BASE_DIR } else { "C:\inetpub\wwwroot\mobilservisiniz" } }
 $RemoteApiPath = Join-Path $RemoteBaseDir "api"
 $RemoteAdminPath = Join-Path $RemoteBaseDir "admin"
 $RemotePlatformPath = Join-Path $RemoteBaseDir "platform"
+$RemoteAppPath = Join-Path $RemoteBaseDir "app"
 if ($RemoteBaseDir -notmatch '^([A-Za-z]):\\(.*)$') { throw "RemoteBaseDir disk harfi ile baslamali: $RemoteBaseDir" }
 $RemoteUnc = "\\$Server\$($Matches[1])`$\$($Matches[2])"
 
